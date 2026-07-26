@@ -1,6 +1,6 @@
 package com.wealth.advisor.agent;
 
-import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.SequentialAgent;
 import com.google.adk.events.Event;
 import com.google.adk.runner.InMemoryRunner;
 import com.google.adk.sessions.Session;
@@ -16,9 +16,9 @@ import org.springframework.stereotype.Service;
  *
  * <p>ADK's core execution unit is the {@code Runner}: you hand it a user id, a session id, and
  * a new {@link Content} message, and it returns a stream ({@code Flowable}) of {@link Event}s —
- * one event per step the agent takes (a tool call, a tool response, the model's text reply,
- * etc). For a simple request/response chat endpoint we don't need streaming, so we collect the
- * whole event stream and concatenate the text parts.
+ * one event per step any agent in the pipeline takes (a tool call, a tool response, an agent's
+ * text reply, etc). For a simple request/response chat endpoint we don't need streaming, so we
+ * collect the whole event stream for the turn and pick out the reply to show the user.
  *
  * <p>Session state (conversation history so far) lives in the {@code SessionService}, not in
  * this class. Here we use {@link InMemoryRunner}, which wires up an in-memory session store —
@@ -37,18 +37,18 @@ public class AgentChatService {
 	// stand-in for real session management until Spring Security + Firestore sessions land.
 	private final Map<String, Session> sessionsByUser = new ConcurrentHashMap<>();
 
-	public AgentChatService(LlmAgent portfolioAdvisorAgent) {
+	public AgentChatService(SequentialAgent wealthAdvisorPipeline) {
 		// appName defaults to the agent's own name when not given explicitly.
-		this.runner = new InMemoryRunner(portfolioAdvisorAgent);
+		this.runner = new InMemoryRunner(wealthAdvisorPipeline);
 	}
 
 	/**
-	 * Runs one turn of conversation for {@code userId} and returns the agent's final text reply.
+	 * Runs one turn of conversation for {@code userId} and returns the reply to show the user.
 	 *
 	 * @param userId caller-supplied user identifier; used only to look up/create an ADK session,
 	 *     not yet backed by real authentication (see {@link AgentChatService class javadoc})
 	 * @param message the user's natural-language message for this turn
-	 * @return the concatenated text of the agent's reply for this turn
+	 * @return the text of the final agent's reply for this turn
 	 */
 	public String chat(String userId, String message) {
 		Session session = sessionsByUser.computeIfAbsent(userId, this::createSession);
@@ -62,17 +62,28 @@ public class AgentChatService {
 						.toList()
 						.blockingGet();
 
-		// A turn can contain multiple events (e.g. a tool-call event, a tool-response event,
-		// then the model's text event). Only the text-bearing parts matter for a plain chat
-		// reply, so we walk every event's parts and keep whatever has text.
-		StringBuilder reply = new StringBuilder();
-		for (Event event : events) {
-			event.content().flatMap(Content::parts).stream()
-					.flatMap(List::stream)
-					.flatMap(part -> part.text().stream())
-					.forEach(reply::append);
+		// A turn now runs both agents in wealthAdvisorPipeline in sequence, so this event list
+		// contains portfolio_analysis's tool-call/response/text events *and*
+		// stock_recommendation's, all appended to the same session. Only the last agent's text
+		// is meant for the user (the first agent's text is consumed via {portfolio_analysis} in
+		// the second agent's instruction, not shown directly) — so we walk backwards and return
+		// the last non-empty text found, rather than concatenating every event's text.
+		for (int i = events.size() - 1; i >= 0; i--) {
+			String text = textOf(events.get(i));
+			if (!text.isEmpty()) {
+				return text;
+			}
 		}
-		return reply.toString();
+		return "";
+	}
+
+	private static String textOf(Event event) {
+		StringBuilder text = new StringBuilder();
+		event.content().flatMap(Content::parts).stream()
+				.flatMap(List::stream)
+				.flatMap(part -> part.text().stream())
+				.forEach(text::append);
+		return text.toString();
 	}
 
 	private Session createSession(String userId) {
