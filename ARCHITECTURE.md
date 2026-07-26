@@ -6,7 +6,9 @@ to learn agentic AI practically — this doc is the map for reading the code, wr
 know roughly what RAG and LLM tool-calling are, but haven't used ADK specifically before.
 
 If you only read one section, read [Agentic AI / ADK concepts](#agentic-ai--adk-concepts) first —
-everything else builds on it.
+everything else builds on it. See also [FAQ.md](FAQ.md) for practical questions answered along the
+way (how to run it locally, worked examples of how the DB queries actually work, etc.) — that
+file grows as new questions come up.
 
 ## Table of contents
 
