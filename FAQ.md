@@ -92,3 +92,36 @@ for that exact field combination.
 **One-line contrast:** auth = "give me the document whose *ID* is exactly this" (no filter, no
 ranking); vector search = "give me the top-3 documents matching this *equality filter*, ranked by
 *closest meaning*" (a filter and a similarity rank, computed together, in a single query).
+
+## Does uploading a PDF store it in GCS? What's the bucket? Can I upload more than one?
+
+**No GCS at all.** There's no bucket, no GCS dependency anywhere in this project.
+`PortfolioController.upload` reads the multipart file's bytes into memory,
+`PortfolioIngestionService.ingest` extracts text (PDFBox), chunks it, embeds each chunk, and
+writes only the **extracted text + embeddings** to Firestore's `portfolio_vectors` collection.
+The original PDF bytes are never persisted anywhere — once the request finishes, they're gone;
+only the derived text chunks remain.
+
+**Not limited to one PDF — but not by design, by absence of a check.** Every chunk write is:
+
+```java
+firestore.collection("portfolio_vectors").add(Map.of("userId", userId, "filename", filename, ...));
+```
+
+`.add()` always creates a **new** document with an auto-generated id — there's no "delete this
+user's existing chunks first" step.
+
+- **Multiple providers (Vanguard, Fidelity, Merrill) works today**, incidentally: upload each
+  statement separately, and every chunk gets tagged with the same `userId` (plus its own
+  `filename`). `PortfolioSearchTool`'s vector search filters only by `userId`, not by `filename`,
+  so it searches across *all* uploaded documents together and returns whichever chunks are
+  semantically closest, regardless of provider.
+- **The real gap: re-uploading doesn't replace anything.** Upload the same (or an updated)
+  statement again and the old chunks aren't deleted — stale and current data coexist
+  indefinitely, both equally eligible to be returned by search. There's also no tracking of
+  *which* filenames a user has uploaded — `users/{userId}.hasUploadedPortfolio` is just a
+  boolean, not a list.
+
+So: fine for a one-time upload from several providers; not yet fine for "re-upload my updated
+Vanguard statement each month" — that needs an explicit delete-by-`userId`(+`filename`) step
+before re-ingesting, which doesn't exist yet.
