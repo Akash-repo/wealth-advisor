@@ -153,38 +153,42 @@ vector distances are meaningless.
 ## Architecture diagram
 
 ```
-                     Browser
-                        |
-          (JSESSIONID cookie / chat+upload REST)
-                        v
-+---------------------------------------------------------------+
-|                  SPRING BOOT APP (advisor)                    |
-|                                                                 |
-|  SecurityConfig (form login, JSESSIONID)                       |
-|  FirestoreUserDetailsService  <---- users collection            |
-|                                                                 |
-|  ChatController --> AgentChatService --> Runner                |
-|                                             |                   |
-|                                             v                   |
-|                                   SequentialAgent (wealthAdvisorPipeline)
-|                                     portfolio_analysis  -->  stock_recommendation
-|                                      |        |                        |
-|                             getStockPrice  searchPortfolio        (no tools;
-|                              (mocked)     (Firestore vector search) reads {portfolio_analysis})
-|                                                                 |
-|  PortfolioController --> PortfolioIngestionService               |
-|                             (PDFBox parse -> TextChunker -> EmbeddingService)
-+---------------------------------------------------------------+
-            |                    |                     |
-            v                    v                     v
-   Firestore: users     Firestore: portfolio_vectors   Firestore: adk-session/*
-   (auth + profile)     (RAG chunks + embeddings)       (ADK conversation history,
-                                                          via FirestoreSessionService)
-                                    |
-                                    v
-                        Gemini 2.5 Flash + text-embedding-004
-                           (Vertex AI, via ADC)
+                         Browser                         
+                            |                            
+         (JSESSIONID cookie / chat + upload REST)        
+                            v                            
++-------------------------------------------------------+
+| SPRING BOOT APP (advisor)                             |
+|                                                       |
+| SecurityConfig (form login, JSESSIONID cookie)        |
+| FirestoreUserDetailsService  <-- users collection     |
+|                                                       |
+| ChatController -> AgentChatService -> Runner          |
+|   -> SequentialAgent (wealthAdvisorPipeline)          |
+|        portfolio_analysis -> stock_recommendation     |
+|        tools: getStockPrice, searchPortfolio (RAG)    |
+|                                                       |
+| PortfolioController -> PortfolioIngestionService      |
+|   (PDFBox parse -> TextChunker -> EmbeddingService)   |
++-------------------------------------------------------+
+                            |                            
+                            v                            
+
+             v                              v                              v
+Firestore: users               Firestore:                     Firestore: adk-session/*
+(auth + profile)               portfolio_vectors              (ADK conversation history,
+                               (RAG chunks + embeddings)      via FirestoreSessionService)
+
+                            |                            
+                            v                            
+          Gemini 2.5 Flash + text-embedding-004          
+                   (Vertex AI, via ADC)                  
 ```
+
+*(`portfolio_analysis` and `stock_recommendation` are the two `SequentialAgent` stages; only
+`portfolio_analysis` has tools — `stock_recommendation` has none, it just reads
+`{portfolio_analysis}`'s output. See [Agentic AI / ADK concepts](#agentic-ai--adk-concepts) above
+for what each box/arrow means.)*
 
 ## End-to-end request flows
 
