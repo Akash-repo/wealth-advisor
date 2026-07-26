@@ -3,6 +3,7 @@ package com.wealth.advisor.agent;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.tools.FunctionTool;
+import com.wealth.advisor.agent.tool.PortfolioSearchTool;
 import com.wealth.advisor.agent.tool.StockLookupTool;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -28,12 +29,12 @@ import org.springframework.context.annotation.Configuration;
 public class AgentConfig {
 
 	/**
-	 * First stage: reads the conversation so far and (once RAG lands in a later milestone) the
-	 * user's actual holdings, and produces a short analysis for the next agent to act on. For now,
-	 * with no portfolio data wired up yet, it's told to say so plainly rather than invent numbers.
+	 * First stage: reads the conversation so far and the user's actual holdings (via {@link
+	 * PortfolioSearchTool}'s RAG search over their uploaded PDF), and produces a short analysis for
+	 * the next agent to act on.
 	 */
 	@Bean
-	public LlmAgent portfolioAnalysisAgent() {
+	public LlmAgent portfolioAnalysisAgent(PortfolioSearchTool portfolioSearchTool) {
 		return LlmAgent.builder()
 				.name("portfolio_analysis")
 				.description(
@@ -42,15 +43,18 @@ public class AgentConfig {
 				.model("gemini-2.5-flash")
 				.instruction(
 						"""
-						You are a portfolio analyst. Portfolio document upload isn't wired up yet, so you
-						have no real holdings data for this user — say so plainly rather than inventing
-						numbers or a fake allocation.
+						You are a portfolio analyst. Use the searchPortfolio tool to look up the user's
+						actual holdings, allocation, or cost basis whenever the question depends on them —
+						if it comes back with found=false, no portfolio has been uploaded yet, so say that
+						plainly instead of inventing numbers.
 
 						If the user mentions a specific stock, use the getStockPrice tool to look up its
 						current price. Write 2-3 sentences summarizing what you found for a colleague who
 						will write the final recommendation; don't address the user directly yet.
 						""")
-				.tools(FunctionTool.create(StockLookupTool.class, "getStockPrice"))
+				.tools(
+						FunctionTool.create(StockLookupTool.class, "getStockPrice"),
+						FunctionTool.create(portfolioSearchTool, "searchPortfolio"))
 				.outputKey("portfolio_analysis")
 				.build();
 	}

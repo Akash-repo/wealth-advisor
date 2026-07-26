@@ -13,6 +13,8 @@
 		form { display: flex; gap: 0.5rem; }
 		input[type=text] { flex: 1; padding: 0.5rem; font-size: 1rem; }
 		button { padding: 0.5rem 1rem; }
+		#upload-row { justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+		#upload-status { font-size: 0.85rem; color: #666; }
 	</style>
 </head>
 <body>
@@ -20,6 +22,12 @@
 	<h2>Wealth Advisor</h2>
 	<form method="post" action="/api/auth/logout"><button type="submit">Log out</button></form>
 </header>
+
+<form id="upload-form">
+	<input id="portfolio-file" type="file" accept="application/pdf" required>
+	<button type="submit">Upload portfolio PDF</button>
+	<span id="upload-status"></span>
+</form>
 
 <div id="log"></div>
 
@@ -32,6 +40,27 @@
 	const log = document.getElementById('log');
 	const form = document.getElementById('chat-form');
 	const messageInput = document.getElementById('message');
+	const uploadForm = document.getElementById('upload-form');
+	const portfolioFile = document.getElementById('portfolio-file');
+	const uploadStatus = document.getElementById('upload-status');
+
+	uploadForm.addEventListener('submit', async (event) => {
+		event.preventDefault();
+		const file = portfolioFile.files[0];
+		if (!file) return;
+		uploadStatus.textContent = 'Uploading...';
+
+		const body = new FormData();
+		body.append('file', file);
+		const response = await fetch('/api/portfolio/upload', { method: 'POST', body });
+
+		if (!response.ok) {
+			uploadStatus.textContent = 'Upload failed: ' + response.status;
+			return;
+		}
+		const data = await response.json();
+		uploadStatus.textContent = `Stored ${data.chunksStored} chunk(s) from ${data.filename}`;
+	});
 
 	function appendMessage(text, who) {
 		const div = document.createElement('div');
