@@ -164,3 +164,30 @@ Nothing is mocked at the infrastructure level (the only mocked thing in this app
 `portfolio_vectors`, and ADK's own `adk-session` collection) and real Gemini via Vertex AI
 (`aiplatform.googleapis.com`, not the public Gemini API key endpoint). This was confirmed by
 actually logging in, chatting, and uploading a PDF end to end earlier in this project's history.
+
+## Is there a signup page, or only the one seeded demo user?
+
+Both — a self-service signup exists now (it didn't originally; `DemoUserSeeder` seeding one user
+was a deliberate initial shortcut to avoid building registration). Go to
+**`http://localhost:8080/signup.html`** (linked from `login.html` too): pick a username
+(3-30 chars, letters/numbers/`_`/`-` only — it becomes the Firestore document id, same convention
+`FirestoreUserDetailsService` already uses), an email, and a password (min 6 chars).
+
+`RegistrationController` (`POST /api/auth/register`, unauthenticated) hands this to
+`UserRegistrationService`, which:
+
+1. Validates the username/password against those rules — rejects with `409` + a message
+   otherwise.
+2. Checks `users/{username}` doesn't already exist in Firestore — `409` if it's taken.
+3. Writes `users/{username}` with a bcrypt `passwordHash` (same `PasswordEncoder` bean
+   `FirestoreUserDetailsService` checks against), `email`, `createdAt`, and
+   `hasUploadedPortfolio: false` — the exact same shape `DemoUserSeeder` writes for the demo user.
+
+Registering does **not** log you in — the signup page's JS redirects to `/login.html` on success,
+where you authenticate with the credentials you just picked, same as any other user. From that
+point on a self-registered user behaves identically to the demo one: own Firestore user doc, own
+`portfolio_vectors` chunks, own ADK session under `adk-session/{username}/...`.
+
+One known simplification: the "does this username already exist" check and the write aren't in a
+Firestore transaction, so two simultaneous signups for the same exact username could theoretically
+both slip past the check. Not worth guarding against at this project's scale.

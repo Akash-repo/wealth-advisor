@@ -194,14 +194,19 @@ for what each box/arrow means.)*
 
 ## End-to-end request flows
 
-### 1. Login
+### 1. Signup + login
 
-1. Browser POSTs `username`/`password` to `/api/auth/login` (a plain HTML form in `login.html`,
+1. (Optional, new users only) Browser POSTs JSON to `/api/auth/register` from `signup.html`.
+   `RegistrationController` → `UserRegistrationService` validates the username/password, checks
+   `users/{username}` doesn't already exist, and writes the doc (bcrypt `passwordHash`, same
+   shape `DemoUserSeeder` writes). This endpoint only creates the account — it doesn't log you
+   in — so the client redirects to `/login.html` on success.
+2. Browser POSTs `username`/`password` to `/api/auth/login` (a plain HTML form in `login.html`,
    handled entirely by Spring Security's form login filter — there's no custom controller for
    this endpoint).
-2. `FirestoreUserDetailsService.loadUserByUsername` looks up `users/{username}` in Firestore
+3. `FirestoreUserDetailsService.loadUserByUsername` looks up `users/{username}` in Firestore
    directly by document id (not a query) and compares the bcrypt `passwordHash`.
-3. On success, Spring Security issues an `HttpOnly`, `SameSite=Lax` `JSESSIONID` cookie and
+4. On success, Spring Security issues an `HttpOnly`, `SameSite=Lax` `JSESSIONID` cookie and
    redirects to `index.html`.
 
 ### 2. Portfolio upload (RAG ingestion)
@@ -337,5 +342,7 @@ These aren't documented anywhere obvious — found by actually running the app, 
 2. ✅ Spring Security login backed by Firestore, per-user session isolation.
 3. ✅ Two-agent `SequentialAgent` pipeline (`portfolio_analysis` → `stock_recommendation`).
 4. ✅ PDF upload → RAG (chunk/embed/store/search) + Firestore-backed ADK sessions.
-5. ⏳ OpenTelemetry observability — not started (see chat history / project memory for the plan).
-6. ⏳ Cloud Run deployment — not started.
+5. ✅ Self-service signup (`signup.html` → `POST /api/auth/register` → `UserRegistrationService`),
+   so accounts aren't limited to the one seeded demo user.
+6. ⏳ OpenTelemetry observability — on hold, see [FAQ.md](FAQ.md) for the plan.
+7. ⏳ Cloud Run deployment — not started.
