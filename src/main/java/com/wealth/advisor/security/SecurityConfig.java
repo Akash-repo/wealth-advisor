@@ -17,8 +17,13 @@ import org.springframework.security.web.SecurityFilterChain;
  * <p>What actually happens on a request, in order:
  *
  * <ol>
- *   <li>Unauthenticated request to anything except {@code /login.html} or
- *       {@code /api/auth/login} → Spring Security redirects to {@code /login.html}.
+ *   <li>Unauthenticated request to anything except {@code /login.html}, {@code /signup.html},
+ *       {@code /api/auth/login}, or {@code /api/auth/register} → Spring Security redirects to
+ *       {@code /login.html}.
+ *   <li>New user: browser POSTs JSON to {@code /api/auth/register} ({@code signup.html}'s fetch
+ *       call) → {@code RegistrationController} creates the Firestore user doc, then the client
+ *       redirects to {@code /login.html} to actually authenticate — registering doesn't log you
+ *       in by itself.
  *   <li>Browser POSTs {@code username}/{@code password} to {@code /api/auth/login} (a plain HTML
  *       form, no JS) → Spring Security's form-login filter intercepts it, calls {@link
  *       FirestoreUserDetailsService} to load the user and check the password.
@@ -53,7 +58,11 @@ public class SecurityConfig {
 				.csrf(AbstractHttpConfigurer::disable)
 				.authorizeHttpRequests(
 						auth ->
-								auth.requestMatchers("/login.html", "/api/auth/login")
+								auth.requestMatchers(
+												"/login.html",
+												"/api/auth/login",
+												"/signup.html",
+												"/api/auth/register")
 										.permitAll()
 										.anyRequest()
 										.authenticated())

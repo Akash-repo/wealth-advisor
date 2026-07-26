@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<title>Wealth Advisor - Sign up</title>
+	<style>
+		body { font-family: system-ui, sans-serif; display: flex; justify-content: center; margin-top: 10vh; }
+		form { display: flex; flex-direction: column; gap: 0.75rem; width: 20rem; }
+		input, button { padding: 0.5rem; font-size: 1rem; }
+		h1 { text-align: center; }
+		#error { color: #c00; font-size: 0.85rem; min-height: 1.2rem; }
+		a { text-align: center; font-size: 0.9rem; }
+	</style>
+</head>
+<body>
+<form id="signup-form">
+	<h1>Create account</h1>
+	<input type="text" id="username" placeholder="Username (3-30 letters/numbers/_/-)" autofocus required pattern="[a-zA-Z0-9_-]{3,30}">
+	<input type="email" id="email" placeholder="Email" required>
+	<input type="password" id="password" placeholder="Password (min 6 characters)" required minlength="6">
+	<div id="error"></div>
+	<button type="submit">Sign up</button>
+	<a href="/login.html">Already have an account? Log in</a>
+</form>
+
+<script>
+	const form = document.getElementById('signup-form');
+	const errorDiv = document.getElementById('error');
+
+	form.addEventListener('submit', async (event) => {
+		event.preventDefault();
+		errorDiv.textContent = '';
+
+		const body = {
+			username: document.getElementById('username').value,
+			email: document.getElementById('email').value,
+			password: document.getElementById('password').value,
+		};
+
+		const response = await fetch('/api/auth/register', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body),
+		});
+
+		if (response.ok) {
+			window.location.href = '/login.html';
+			return;
+		}
+		const data = await response.json();
+		errorDiv.textContent = data.error || 'Registration failed.';
+	});
+</script>
+</body>
+</html>
