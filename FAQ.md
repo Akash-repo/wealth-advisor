@@ -125,3 +125,42 @@ user's existing chunks first" step.
 So: fine for a one-time upload from several providers; not yet fine for "re-upload my updated
 Vanguard statement each month" — that needs an explicit delete-by-`userId`(+`filename`) step
 before re-ingesting, which doesn't exist yet.
+
+## Where's our ADC in this project? How does it differ between local and Cloud Run?
+
+**Nowhere in the repo — that's the point.** There's no ADC file, no credentials, no key
+committed or referenced anywhere in this codebase. ADC lives entirely outside the project, on
+whatever machine runs it:
+
+```
+~/.config/gcloud/application_default_credentials.json   # created by `gcloud auth application-default login`
+```
+
+Neither `GenAiClientConfig.genAiClient()` (`Client.builder().build()`) nor
+`FirestoreConfig.firestore(...)` (`FirestoreOptions.newBuilder().setProjectId(projectId).build().getService()`)
+mentions credentials at all. Both internally call Google's standard
+`GoogleCredentials.getApplicationDefault()`, which is a *search*, not a fixed path:
+
+1. `GOOGLE_APPLICATION_CREDENTIALS` env var (path to a service account key file) — not set here.
+2. → the `gcloud` ADC file above — **this is what fires when you run locally**.
+3. → (only on GCP infra) the metadata server's attached service account.
+
+|                        | Local (now)                                                 | Cloud Run (later)                                              |
+|------------------------|--------------------------------------------------------------|-------------------------------------------------------------------|
+| ADC resolves from      | `~/.config/gcloud/application_default_credentials.json`      | Cloud Run's metadata server — no file at all                      |
+| Whose identity         | **You** (your own Google account)                             | A **service account** attached to the Cloud Run service            |
+| Permissions come from  | IAM roles granted to your user on the project                | IAM roles granted to that service account                          |
+| Setup needed           | `gcloud auth application-default login` (already done)       | Grant the service account `roles/datastore.user` + `roles/aiplatform.user` (or equivalent) — part of the not-yet-done Cloud Run milestone |
+
+The code doesn't know or care which of these it's running under — same two lines of Java either
+way. That portability is the whole reason this project uses ADC instead of an API key.
+
+## Does running locally actually hit real Firestore/Gemini, or is anything mocked?
+
+Nothing is mocked at the infrastructure level (the only mocked thing in this app is
+`StockLookupTool`'s price data). Running locally with the env vars above talks to the *real*
+`agentic-ai-503223` project: real Firestore (visible in the
+[Firestore Console](https://console.cloud.google.com/firestore/databases) under `users`,
+`portfolio_vectors`, and ADK's own `adk-session` collection) and real Gemini via Vertex AI
+(`aiplatform.googleapis.com`, not the public Gemini API key endpoint). This was confirmed by
+actually logging in, chatting, and uploading a PDF end to end earlier in this project's history.
