@@ -9,6 +9,8 @@ import com.wealth.advisor.portfolio.EmbeddingService;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
@@ -17,9 +19,17 @@ import org.springframework.stereotype.Component;
  * com.wealth.advisor.portfolio.PortfolioIngestionService}).
  *
  * <p>Unlike {@link StockLookupTool}, this is a Spring-managed instance tool (constructor-injected
- * with {@link Firestore} and {@link EmbeddingService}), registered in {@code AgentConfig} via
- * {@code FunctionTool.create(portfolioSearchTool, "searchPortfolio")} rather than the {@code
- * Class, methodName} static overload.
+ * with {@link Firestore} and {@link EmbeddingService}), registered in {@code AgentConfig} like
+ * this — note the {@code portfolioSearchTool, "..."} overload instead of {@code Class, "..."}:
+ *
+ * <pre>{@code
+ * @Bean
+ * public LlmAgent portfolioAnalysisAgent(PortfolioSearchTool portfolioSearchTool) {
+ *   return LlmAgent.builder()
+ *       .tools(FunctionTool.create(portfolioSearchTool, "searchPortfolio"))
+ *       .build();
+ * }
+ * }</pre>
  *
  * <p>{@code toolContext} isn't a real, model-supplied argument — ADK recognizes that literal
  * parameter name and injects the current {@link ToolContext} instead, which is how this method
@@ -33,6 +43,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class PortfolioSearchTool {
 
+	private static final Logger log = LoggerFactory.getLogger(PortfolioSearchTool.class);
 	private static final int MAX_RESULTS = 3;
 
 	private final Firestore firestore;
@@ -55,12 +66,14 @@ public class PortfolioSearchTool {
 											+ " or 'Nvidia holdings'")
 					String query,
 			ToolContext toolContext) {
+		String userId = toolContext.userId();
+		log.debug("searchPortfolio(userId='{}', query='{}')", userId, query);
 		double[] queryVector = embeddingService.embed(query);
 
 		VectorQuery vectorQuery =
 				firestore
 						.collection("portfolio_vectors")
-						.whereEqualTo("userId", toolContext.userId())
+						.whereEqualTo("userId", userId)
 						.findNearest("embedding", queryVector, MAX_RESULTS, VectorQuery.DistanceMeasure.COSINE);
 
 		List<QueryDocumentSnapshot> matches;
@@ -68,9 +81,11 @@ public class PortfolioSearchTool {
 			matches = vectorQuery.get().get().getDocuments();
 		} catch (InterruptedException | ExecutionException e) {
 			Thread.currentThread().interrupt();
+			log.error("Portfolio vector search failed for userId='{}'", userId, e);
 			throw new IllegalStateException("Portfolio vector search failed", e);
 		}
 
+		log.debug("searchPortfolio(userId='{}') found {} matching chunk(s)", userId, matches.size());
 		if (matches.isEmpty()) {
 			return Map.of(
 					"found",

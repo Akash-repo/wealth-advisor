@@ -44,6 +44,7 @@ public class DemoUserSeeder implements ApplicationRunner {
 		try {
 			DocumentReference userRef = firestore.collection("users").document(demoUsername);
 			if (userRef.get().get().exists()) {
+				log.debug("Demo user '{}' already exists, nothing to seed", demoUsername);
 				return;
 			}
 			userRef

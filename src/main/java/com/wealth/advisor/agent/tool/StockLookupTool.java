@@ -2,6 +2,8 @@ package com.wealth.advisor.agent.tool;
 
 import com.google.adk.tools.Annotations.Schema;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A demo "tool" for the portfolio advisor agent.
@@ -11,6 +13,15 @@ import java.util.Map;
  * hands to Gemini, describing what arguments the tool takes. When the model decides it needs
  * this data, ADK invokes the method for you and feeds the return value back into the
  * conversation as a "function response" — the model then uses that to write its final answer.
+ *
+ * <p>Registered on an agent like this (see {@code AgentConfig}):
+ *
+ * <pre>{@code
+ * LlmAgent.builder()
+ *     .instruction("Use the getStockPrice tool to look up a current price.")
+ *     .tools(FunctionTool.create(StockLookupTool.class, "getStockPrice"))
+ *     .build();
+ * }</pre>
  *
  * <p>Two things ADK requires of a tool method:
  * <ul>
@@ -22,6 +33,8 @@ import java.util.Map;
  * </ul>
  */
 public final class StockLookupTool {
+
+	private static final Logger log = LoggerFactory.getLogger(StockLookupTool.class);
 
 	// Fixed prices for local learning/demo purposes only; wire up a real market data
 	// API here when this moves past the ADK learning stage.
@@ -52,6 +65,7 @@ public final class StockLookupTool {
 			@Schema(name = "ticker", description = "Stock ticker symbol, e.g. NVDA or AAPL") String ticker) {
 		String symbol = ticker.toUpperCase();
 		Double price = MOCK_PRICES.get(symbol);
+		log.debug("getStockPrice(ticker='{}') -> {}", symbol, price);
 		if (price == null) {
 			return Map.of("ticker", symbol, "found", false);
 		}

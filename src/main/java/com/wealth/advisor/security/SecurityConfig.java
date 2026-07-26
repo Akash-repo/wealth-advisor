@@ -14,6 +14,23 @@ import org.springframework.security.web.SecurityFilterChain;
  * every other endpoint (this is what gives {@link com.wealth.advisor.web.ChatController} a real,
  * per-user identity instead of a client-supplied one).
  *
+ * <p>What actually happens on a request, in order:
+ *
+ * <ol>
+ *   <li>Unauthenticated request to anything except {@code /login.html} or
+ *       {@code /api/auth/login} → Spring Security redirects to {@code /login.html}.
+ *   <li>Browser POSTs {@code username}/{@code password} to {@code /api/auth/login} (a plain HTML
+ *       form, no JS) → Spring Security's form-login filter intercepts it, calls {@link
+ *       FirestoreUserDetailsService} to load the user and check the password.
+ *   <li>On success: a {@code JSESSIONID} cookie is set and the browser is redirected to
+ *       {@code /index.html}. On failure: back to {@code /login.html}.
+ *   <li>Every later request carries that cookie; Spring Security resolves it back to an {@link
+ *       org.springframework.security.core.Authentication}, which {@code ChatController} and
+ *       {@code PortfolioController} read via {@code Authentication.getName()} to get the real
+ *       username — never trusting a client-supplied id.
+ *   <li>{@code POST /api/auth/logout} clears the session and deletes the cookie.
+ * </ol>
+ *
  * <p>CSRF protection is off here, same tradeoff the original design doc called out: the session
  * cookie is issued with {@code SameSite=Lax} (see {@code application.properties}), which blocks
  * the cross-site request forgery scenarios CSRF tokens exist to prevent for a same-origin app
@@ -31,9 +48,15 @@ public class SecurityConfig {
 
 	@Bean
 	public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
-		http.csrf(AbstractHttpConfigurer::disable)
+		http
+				// See class javadoc for why this is safe to disable in this app's shape.
+				.csrf(AbstractHttpConfigurer::disable)
 				.authorizeHttpRequests(
-						auth -> auth.requestMatchers("/login.html", "/api/auth/login").permitAll().anyRequest().authenticated())
+						auth ->
+								auth.requestMatchers("/login.html", "/api/auth/login")
+										.permitAll()
+										.anyRequest()
+										.authenticated())
 				.formLogin(
 						form ->
 								form.loginPage("/login.html")
