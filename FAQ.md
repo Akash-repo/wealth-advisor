@@ -191,3 +191,35 @@ point on a self-registered user behaves identically to the demo one: own Firesto
 One known simplification: the "does this username already exist" check and the write aren't in a
 Firestore transaction, so two simultaneous signups for the same exact username could theoretically
 both slip past the check. Not worth guarding against at this project's scale.
+
+## How do I run this in debug mode to step through the flow?
+
+Easiest path if you're in IntelliJ: open `AdvisorApplication.java`, click the gutter icon next to
+`main`, and choose **Debug** instead of Run. First time only, add the required env vars to that
+run configuration (**Run → Edit Configurations → AdvisorApplication → Environment variables**),
+since a GUI-launched process doesn't inherit your shell's exports:
+
+```
+GOOGLE_GENAI_USE_VERTEXAI=true;GOOGLE_CLOUD_PROJECT=agentic-ai-503223;GOOGLE_CLOUD_LOCATION=us-central1;GCP_PROJECT_ID=agentic-ai-503223
+```
+
+Good breakpoint spots for watching the flows this doc/ARCHITECTURE.md describe:
+- `AgentChatService.chat()` — session lookup, `runAsync`, walking events backwards for the reply
+- `PortfolioSearchTool.searchPortfolio()` — `toolContext.userId()` resolving, the vector query
+- `PortfolioIngestionService.ingest()` — chunking → embedding → Firestore writes, per chunk
+- `FirestoreUserDetailsService.loadUserByUsername()` / `UserRegistrationService.register()` — auth/signup
+
+Prefer the terminal instead? `mvnDebug spring-boot:run` (with the same env vars exported first)
+suspends and listens on port **8000** (not IntelliJ's default 5005) — attach via **Run → Edit
+Configurations → + → Remote JVM Debug**, port set to 8000.
+
+Either way, pair this with `logging.level.com.wealth.advisor=DEBUG` (already set in
+`application.properties`) — it surfaces this app's own `log.debug(...)` calls (session
+reuse/creation, tool invocations with their arguments and results, embedding calls) right
+alongside whatever you're stepping through, e.g.:
+
+```
+DEBUG ... AgentChatService      : Reusing existing Firestore session for userId='demo'
+DEBUG ... AgentChatService      : Running turn for userId='demo': "What is Tesla trading at?"
+DEBUG ... StockLookupTool       : getStockPrice(ticker='TSLA') -> 342.75
+```
