@@ -5,6 +5,7 @@ import com.google.adk.agents.SequentialAgent;
 import com.google.adk.tools.FunctionTool;
 import com.wealth.advisor.agent.tool.PortfolioSearchTool;
 import com.wealth.advisor.agent.tool.StockLookupTool;
+import com.wealth.advisor.audit.AgentAuditRecorder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -34,7 +35,8 @@ public class AgentConfig {
 	 * the next agent to act on.
 	 */
 	@Bean
-	public LlmAgent portfolioAnalysisAgent(PortfolioSearchTool portfolioSearchTool) {
+	public LlmAgent portfolioAnalysisAgent(
+			PortfolioSearchTool portfolioSearchTool, AgentAuditRecorder agentAuditRecorder) {
 		return LlmAgent.builder()
 				.name("portfolio_analysis")
 				.description(
@@ -56,6 +58,10 @@ public class AgentConfig {
 						FunctionTool.create(StockLookupTool.class, "getStockPrice"),
 						FunctionTool.create(portfolioSearchTool, "searchPortfolio"))
 				.outputKey("portfolio_analysis")
+				// Every real call to Gemini this agent makes gets recorded to BigQuery — see
+				// AgentAuditRecorder's javadoc for how a whole turn gets correlated across agents.
+				.beforeModelCallbackSync(agentAuditRecorder::beforeModel)
+				.afterModelCallbackSync(agentAuditRecorder::afterModel)
 				.build();
 	}
 
@@ -64,7 +70,7 @@ public class AgentConfig {
 	 * {portfolio_analysis}} placeholder below) into the actual reply shown to the user.
 	 */
 	@Bean
-	public LlmAgent stockRecommendationAgent() {
+	public LlmAgent stockRecommendationAgent(AgentAuditRecorder agentAuditRecorder) {
 		return LlmAgent.builder()
 				.name("stock_recommendation")
 				.description("Turns a portfolio analysis into a balanced recommendation with risk warnings.")
@@ -79,6 +85,8 @@ public class AgentConfig {
 						Using that analysis, answer the user's original question with a balanced,
 						specific recommendation. Always include a brief risk disclaimer.
 						""")
+				.beforeModelCallbackSync(agentAuditRecorder::beforeModel)
+				.afterModelCallbackSync(agentAuditRecorder::afterModel)
 				.build();
 	}
 

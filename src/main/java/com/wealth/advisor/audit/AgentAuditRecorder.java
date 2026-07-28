@@ -1,0 +1,255 @@
+package com.wealth.advisor.audit;
+
+import com.fasterxml.jackson.annotation.JsonRawValue;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.adk.agents.CallbackContext;
+import com.google.adk.models.LlmRequest;
+import com.google.adk.models.LlmResponse;
+import com.google.cloud.bigquery.BigQuery;
+import com.google.cloud.bigquery.InsertAllRequest;
+import com.google.cloud.bigquery.InsertAllResponse;
+import com.google.cloud.bigquery.TableId;
+import com.google.genai.types.Content;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
+
+/**
+ * Records every real call this app makes to Gemini into BigQuery's {@code agent_audit_log} table
+ * — this is the "see exactly what happened internally" tool, one row per user chat turn.
+ *
+ * <p>Wired onto both agents in {@code AgentConfig} via ADK's model-call callbacks:
+ *
+ * <pre>{@code
+ * LlmAgent.builder()
+ *     .beforeModelCallbackSync(agentAuditRecorder::beforeModel)
+ *     .afterModelCallbackSync(agentAuditRecorder::afterModel)
+ *     .build();
+ * }</pre>
+ *
+ * <p>{@code beforeModel} fires immediately before every actual Gemini call, {@code afterModel}
+ * immediately after — for <em>any</em> agent using these callbacks, not just one. A single user
+ * turn is correlated across both agents (and across however many times each agent calls the
+ * model) using ADK's own {@code invocationId} — generated once per incoming user message by
+ * {@code Runner} and threaded through every sub-agent in a {@code SequentialAgent}, which is
+ * exactly the "one id per user prompt" concept this table's {@code user_prompt_id} column needs.
+ *
+ * <p>Why one agent can have more than one LLM call per turn: if {@code portfolio_analysis}
+ * decides to call {@code searchPortfolio}, that's two round-trips to Gemini for that one agent —
+ * a first call where the model asks to invoke the tool, then (after the tool runs) a second call
+ * where the model reacts to the tool's result. Both get captured, in order, in that agent's
+ * {@code *_llm_calls} JSON array.
+ */
+@Component
+public class AgentAuditRecorder {
+
+	private static final Logger log = LoggerFactory.getLogger(AgentAuditRecorder.class);
+
+	private final BigQuery bigQuery;
+	private final ObjectMapper objectMapper = new ObjectMapper();
+
+	// One entry per in-flight user turn, keyed by ADK's invocationId. Removed by finalizeTurn.
+	private final Map<String, TurnAudit> turnsByInvocationId = new ConcurrentHashMap<>();
+	// Secondary index so AgentChatService can finalize a turn knowing only the userId — it never
+	// sees ADK's invocationId directly, and this also means a turn that fails before producing any
+	// events (so there's no Event to read an invocationId back off of) can still be finalized.
+	// This app only runs one turn at a time per user, so userId is an unambiguous lookup key.
+	private final Map<String, String> invocationIdByUserId = new ConcurrentHashMap<>();
+
+	public AgentAuditRecorder(BigQuery bigQuery) {
+		this.bigQuery = bigQuery;
+	}
+
+	/** One accumulating record per user turn, built up across both agents' model calls. */
+	private static final class TurnAudit {
+		final String userId;
+		final String sessionId;
+		final String userPromptText;
+		// agentName -> ordered list of completed round-trips for that agent this turn.
+		final Map<String, List<RoundTrip>> callsByAgent = new LinkedHashMap<>();
+		// agentName -> the round-trip currently awaiting its afterModel callback.
+		final Map<String, PendingRoundTrip> pendingByAgent = new ConcurrentHashMap<>();
+
+		TurnAudit(String userId, String sessionId, String userPromptText) {
+			this.userId = userId;
+			this.sessionId = sessionId;
+			this.userPromptText = userPromptText;
+		}
+	}
+
+	private static final class PendingRoundTrip {
+		final String requestJson;
+		final long startNanos;
+
+		PendingRoundTrip(String requestJson) {
+			this.requestJson = requestJson;
+			this.startNanos = System.nanoTime();
+		}
+	}
+
+	/**
+	 * One completed Gemini call: what was sent, what came back, how long it took, token usage.
+	 * {@code requestJson}/{@code responseJson} are pre-serialized JSON (from ADK's own {@code
+	 * LlmRequest.toJson()}/{@code LlmResponse.toJson()}) — {@code @JsonRawValue} embeds them as
+	 * genuine nested JSON in the final array rather than double-escaped strings, so BigQuery's
+	 * JSON functions can query into them directly.
+	 */
+	private record RoundTrip(
+			@JsonRawValue String requestJson,
+			@JsonRawValue String responseJson,
+			long latencyMs,
+			Integer promptTokens,
+			Integer completionTokens) {}
+
+	/** Registered as an agent's {@code beforeModelCallbackSync}. Never overrides the request. */
+	public Optional<LlmResponse> beforeModel(CallbackContext ctx, LlmRequest.Builder requestBuilder) {
+		invocationIdByUserId.put(ctx.userId(), ctx.invocationId());
+		TurnAudit turn =
+				turnsByInvocationId.computeIfAbsent(
+						ctx.invocationId(),
+						id ->
+								new TurnAudit(
+										ctx.userId(), ctx.sessionId(), extractText(ctx.userContent().orElse(null))));
+		turn.pendingByAgent.put(ctx.agentName(), new PendingRoundTrip(requestBuilder.build().toJson()));
+		return Optional.empty();
+	}
+
+	/** Registered as an agent's {@code afterModelCallbackSync}. Never overrides the response. */
+	public Optional<LlmResponse> afterModel(CallbackContext ctx, LlmResponse response) {
+		TurnAudit turn = turnsByInvocationId.get(ctx.invocationId());
+		if (turn == null) {
+			log.warn("afterModel fired with no matching turn for invocationId='{}'", ctx.invocationId());
+			return Optional.empty();
+		}
+		PendingRoundTrip pending = turn.pendingByAgent.remove(ctx.agentName());
+		long latencyMs =
+				pending == null ? -1 : (System.nanoTime() - pending.startNanos) / 1_000_000;
+
+		Integer promptTokens = null;
+		Integer completionTokens = null;
+		if (response.usageMetadata().isPresent()) {
+			promptTokens = response.usageMetadata().get().promptTokenCount().orElse(null);
+			completionTokens = response.usageMetadata().get().candidatesTokenCount().orElse(null);
+		}
+
+		turn.callsByAgent
+				.computeIfAbsent(ctx.agentName(), a -> new ArrayList<>())
+				.add(
+						new RoundTrip(
+								pending == null ? null : pending.requestJson,
+								response.toJson(),
+								latencyMs,
+								promptTokens,
+								completionTokens));
+		return Optional.empty();
+	}
+
+	/**
+	 * Called once by {@code AgentChatService} after a turn finishes (success or failure) to write
+	 * the accumulated row to BigQuery and forget this turn's in-memory state.
+	 *
+	 * @param userId identifies which in-flight turn to finalize (see {@link
+	 *     #invocationIdByUserId}) — not ADK's invocationId itself, which {@code AgentChatService}
+	 *     never needs to know
+	 */
+	public void finalizeTurn(
+			String userId,
+			String agent1Name,
+			String agent2Name,
+			String inputToAgent2,
+			String finalResponse,
+			long totalLatencyMs,
+			String status,
+			String errorMessage) {
+		String invocationId = invocationIdByUserId.remove(userId);
+		TurnAudit turn = invocationId == null ? null : turnsByInvocationId.remove(invocationId);
+		if (turn == null) {
+			log.warn("No audit data recorded for userId='{}' — skipping BigQuery write", userId);
+			return;
+		}
+
+		try {
+			Map<String, Object> row = new HashMap<>();
+			row.put("user_prompt_id", invocationId);
+			row.put("user_id", turn.userId);
+			row.put("session_id", turn.sessionId);
+			row.put("user_prompt_text", turn.userPromptText);
+			putAgentColumns(row, "agent1", agent1Name, turn.callsByAgent.get(agent1Name));
+			row.put("input_to_agent2", inputToAgent2);
+			putAgentColumns(row, "agent2", agent2Name, turn.callsByAgent.get(agent2Name));
+			row.put("final_response_to_user", finalResponse);
+			row.put("total_latency_ms", totalLatencyMs);
+			row.put("status", status);
+			if (errorMessage != null) {
+				row.put("error_message", errorMessage);
+			}
+			row.put("created_at", Instant.now().toString());
+
+			InsertAllResponse response =
+					bigQuery.insertAll(
+							InsertAllRequest.newBuilder(TableId.of(AuditSchemaInitializer.DATASET, AuditSchemaInitializer.TABLE))
+									.addRow(row)
+									.build());
+			if (response.hasErrors()) {
+				log.error(
+						"BigQuery insert errors for invocationId='{}': {}", invocationId, response.getInsertErrors());
+			} else {
+				log.debug("Audit row written to BigQuery for invocationId='{}'", invocationId);
+			}
+		} catch (Exception e) {
+			log.error("Failed to write audit row for invocationId='{}'", invocationId, e);
+		}
+	}
+
+	private void putAgentColumns(
+			Map<String, Object> row, String columnPrefix, String agentName, List<RoundTrip> calls) {
+		List<RoundTrip> safeCalls = calls == null ? List.of() : calls;
+		row.put(columnPrefix + "_name", agentName);
+		row.put(columnPrefix + "_llm_calls", toJsonArray(safeCalls));
+		row.put(
+				columnPrefix + "_latency_ms", safeCalls.stream().mapToLong(RoundTrip::latencyMs).sum());
+		row.put(columnPrefix + "_prompt_tokens", sumNullable(safeCalls, RoundTrip::promptTokens));
+		row.put(
+				columnPrefix + "_completion_tokens", sumNullable(safeCalls, RoundTrip::completionTokens));
+	}
+
+	private static Integer sumNullable(
+			List<RoundTrip> calls, java.util.function.Function<RoundTrip, Integer> extractor) {
+		int sum = 0;
+		boolean any = false;
+		for (RoundTrip call : calls) {
+			Integer value = extractor.apply(call);
+			if (value != null) {
+				sum += value;
+				any = true;
+			}
+		}
+		return any ? sum : null;
+	}
+
+	private String toJsonArray(List<RoundTrip> calls) {
+		try {
+			return objectMapper.writeValueAsString(calls);
+		} catch (Exception e) {
+			log.error("Failed to serialize LLM call list to JSON", e);
+			return "[]";
+		}
+	}
+
+	private static String extractText(Content content) {
+		if (content == null) {
+			return "";
+		}
+		StringBuilder text = new StringBuilder();
+		content.parts().ifPresent(parts -> parts.forEach(part -> part.text().ifPresent(text::append)));
+		return text.toString();
+	}
+}

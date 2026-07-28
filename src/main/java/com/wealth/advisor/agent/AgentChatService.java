@@ -1,5 +1,6 @@
 package com.wealth.advisor.agent;
 
+import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.events.Event;
 import com.google.adk.runner.Runner;
@@ -8,6 +9,7 @@ import com.google.adk.sessions.SessionNotFoundException;
 import com.google.cloud.firestore.Firestore;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
+import com.wealth.advisor.audit.AgentAuditRecorder;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -43,6 +45,12 @@ import org.springframework.stereotype.Service;
  * hitting it live, not documented anywhere). So {@link #ensureSessionExists} does the
  * get-or-create check itself before every turn instead of relying on that flag.
  *
+ * <p>Every real Gemini call either agent makes is separately recorded to BigQuery by {@link
+ * AgentAuditRecorder} (wired onto both agents in {@code AgentConfig}) — this class only needs to
+ * call {@link AgentAuditRecorder#finalizeTurn} once the turn is over (success or failure) so that
+ * accumulated data gets written and the per-agent hand-off ({@code input_to_agent2}) and final
+ * reply get attached to the same row.
+ *
  * @see AgentConfig for how {@code wealthAdvisorPipeline} (the {@link SequentialAgent} this class
  *     runs) is assembled
  */
@@ -52,18 +60,30 @@ public class AgentChatService {
 	private static final Logger log = LoggerFactory.getLogger(AgentChatService.class);
 
 	private final Runner runner;
+	private final AgentAuditRecorder agentAuditRecorder;
+	private final String agent1Name;
+	private final String agent2Name;
 
-	public AgentChatService(SequentialAgent wealthAdvisorPipeline, Firestore firestore) {
+	public AgentChatService(
+			SequentialAgent wealthAdvisorPipeline,
+			Firestore firestore,
+			AgentAuditRecorder agentAuditRecorder) {
 		this.runner =
 				Runner.builder()
 						.agent(wealthAdvisorPipeline)
 						.appName(wealthAdvisorPipeline.name())
 						.sessionService(new FirestoreSessionService(firestore))
 						.build();
+		this.agentAuditRecorder = agentAuditRecorder;
+		List<? extends BaseAgent> subAgents = wealthAdvisorPipeline.subAgents();
+		this.agent1Name = subAgents.get(0).name();
+		this.agent2Name = subAgents.get(1).name();
 		log.info(
-				"AgentChatService ready: agent='{}', appName='{}'",
+				"AgentChatService ready: agent='{}', appName='{}', pipeline={} -> {}",
 				wealthAdvisorPipeline.name(),
-				runner.appName());
+				runner.appName(),
+				agent1Name,
+				agent2Name);
 	}
 
 	/**
@@ -79,37 +99,48 @@ public class AgentChatService {
 
 		log.debug("Running turn for userId='{}': \"{}\"", userId, message);
 
-		// runAsync returns a Flowable (RxJava) of Events; blockingGet() waits for the whole
-		// turn to finish and collects every event into a List, since we just want a plain
-		// String reply here rather than a live stream.
-		List<Event> events =
-				runner
-						.runAsync(userId, userId, Content.fromParts(Part.fromText(message)))
-						.toList()
-						.blockingGet();
-
-		// A turn runs both agents in wealthAdvisorPipeline in sequence, so this event list
-		// contains portfolio_analysis's tool-call/response/text events *and*
-		// stock_recommendation's, all appended to the same session. Only the last agent's text
-		// is meant for the user (the first agent's text is consumed via {portfolio_analysis} in
-		// the second agent's instruction, not shown directly) — so we walk backwards and return
-		// the last non-empty text found, rather than concatenating every event's text.
 		String reply = "";
-		for (int i = events.size() - 1; i >= 0; i--) {
-			String text = textOf(events.get(i));
-			if (!text.isEmpty()) {
-				reply = text;
-				break;
-			}
-		}
+		String inputToAgent2 = "";
+		String status = "SUCCESS";
+		String errorMessage = null;
+		try {
+			// runAsync returns a Flowable (RxJava) of Events; blockingGet() waits for the whole
+			// turn to finish and collects every event into a List, since we just want a plain
+			// String reply here rather than a live stream.
+			List<Event> events =
+					runner
+							.runAsync(userId, userId, Content.fromParts(Part.fromText(message)))
+							.toList()
+							.blockingGet();
 
-		log.info(
-				"Turn complete for userId='{}': {} events, {} ms, replyLength={}",
-				userId,
-				events.size(),
-				System.currentTimeMillis() - startedAt,
-				reply.length());
-		return reply;
+			// A turn runs both agents in wealthAdvisorPipeline in sequence, so this event list
+			// contains portfolio_analysis's tool-call/response/text events *and*
+			// stock_recommendation's, all appended to the same session. Only the last agent's
+			// text is meant for the user (the first agent's text is consumed via
+			// {portfolio_analysis} in the second agent's instruction, not shown directly) — so we
+			// walk backwards and return the last non-empty text found, rather than concatenating
+			// every event's text.
+			reply = lastNonEmptyTextFrom(events, null);
+			// For the audit row: specifically agent1's contribution, not just "the last text
+			// before agent2's" — filtering by author is the precise way to get it.
+			inputToAgent2 = lastNonEmptyTextFrom(events, agent1Name);
+			return reply;
+		} catch (RuntimeException e) {
+			status = "ERROR";
+			errorMessage = e.getMessage();
+			log.error("Turn failed for userId='{}'", userId, e);
+			throw e;
+		} finally {
+			long totalLatencyMs = System.currentTimeMillis() - startedAt;
+			agentAuditRecorder.finalizeTurn(
+					userId, agent1Name, agent2Name, inputToAgent2, reply, totalLatencyMs, status, errorMessage);
+			log.info(
+					"Turn complete for userId='{}': {} ms, status={}, replyLength={}",
+					userId,
+					totalLatencyMs,
+					status,
+					reply.length());
+		}
 	}
 
 	private void ensureSessionExists(String userId) {
@@ -126,6 +157,24 @@ public class AgentChatService {
 					.createSession(runner.appName(), userId, (Map<String, Object>) null, userId)
 					.blockingGet();
 		}
+	}
+
+	/**
+	 * Walks {@code events} backwards and returns the last non-empty text found, optionally
+	 * restricted to events authored by {@code authorFilter} (pass {@code null} for any author).
+	 */
+	private static String lastNonEmptyTextFrom(List<Event> events, String authorFilter) {
+		for (int i = events.size() - 1; i >= 0; i--) {
+			Event event = events.get(i);
+			if (authorFilter != null && !authorFilter.equals(event.author())) {
+				continue;
+			}
+			String text = textOf(event);
+			if (!text.isEmpty()) {
+				return text;
+			}
+		}
+		return "";
 	}
 
 	private static String textOf(Event event) {

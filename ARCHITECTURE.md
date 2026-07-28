@@ -17,6 +17,7 @@ file grows as new questions come up.
 - [Architecture diagram](#architecture-diagram)
 - [End-to-end request flows](#end-to-end-request-flows)
 - [Firestore schema](#firestore-schema)
+- [BigQuery audit log](#bigquery-audit-log)
 - [Environment variables](#environment-variables)
 - [Gotchas discovered the hard way](#gotchas-discovered-the-hard-way)
 - [Milestone status](#milestone-status)
@@ -172,14 +173,18 @@ vector distances are meaningless.
 |                                                       |
 | PortfolioController -> PortfolioIngestionService      |
 |   (PDFBox parse -> TextChunker -> EmbeddingService)   |
+|                                                       |
+| AgentAuditRecorder (beforeModel/afterModel callbacks, |
+|   wired onto both agents in AgentConfig)              |
 +-------------------------------------------------------+
                             |                            
                             v                            
 
-             v                              v                              v
-Firestore: users               Firestore:                     Firestore: adk-session/*
-(auth + profile)               portfolio_vectors              (ADK conversation history,
-                               (RAG chunks + embeddings)      via FirestoreSessionService)
+     v                    v                    v                    v
+Firestore: users   Firestore:            Firestore: adk-session/*   BigQuery:
+(auth + profile)   portfolio_vectors     (ADK conversation           wealth_agent
+                    (RAG chunks +        history, via                .agent_audit_log
+                    embeddings)          FirestoreSessionService)    (1 row/turn)
 
                             |                            
                             v                            
@@ -190,7 +195,10 @@ Firestore: users               Firestore:                     Firestore: adk-ses
 *(`portfolio_analysis` and `stock_recommendation` are the two `SequentialAgent` stages; only
 `portfolio_analysis` has tools — `stock_recommendation` has none, it just reads
 `{portfolio_analysis}`'s output. See [Agentic AI / ADK concepts](#agentic-ai--adk-concepts) above
-for what each box/arrow means.)*
+for what each box/arrow means. `AgentAuditRecorder` sits outside the request path proper — it's
+model-call callbacks fired by ADK itself, not something `AgentChatService` calls directly except
+once, at the very end of a turn, to flush the accumulated row. See [BigQuery
+audit log](#bigquery-audit-log).)*
 
 ## End-to-end request flows
 
@@ -237,6 +245,12 @@ for what each box/arrow means.)*
    (with a risk disclaimer, per its instruction).
 5. `AgentChatService` walks the turn's events backwards and returns the last non-empty text
    found — stage 2's reply, not stage 1's intermediate analysis.
+6. Independently of all that, every real call *either* agent makes to Gemini during the turn is
+   captured by `AgentAuditRecorder`'s `beforeModelCallbackSync`/`afterModelCallbackSync` (wired
+   onto both agents in `AgentConfig`) — request JSON, response JSON, latency, token counts. Once
+   the turn ends (success or thrown exception — `AgentChatService.chat` finalizes from a `finally`
+   block), those accumulated calls are written as one row to BigQuery. See [BigQuery audit
+   log](#bigquery-audit-log).
 
 ## Firestore schema
 
@@ -292,6 +306,62 @@ user-state (collection)
 We don't write to any of this directly — it's entirely managed by
 `com.google.adk.sessions.FirestoreSessionService`, constructed once in `AgentChatService`.
 
+## BigQuery audit log
+
+Every real call this app makes to Gemini gets recorded — this is the "see exactly what happened
+internally for a given user turn" tool, queryable with real SQL rather than grepping logs. One row
+per user chat turn in `wealth_agent.agent_audit_log`, created on startup if missing by
+`AuditSchemaInitializer` (same "seed what's missing, warn and keep going if unreachable" pattern
+as `DemoUserSeeder`).
+
+**Why BigQuery and not Cloud SQL or just log lines:** serverless (billed per query/storage, not
+per hour like an always-on Cloud SQL instance), the free tier (10GB storage + 1TB queries/month)
+comfortably covers this project's scale, and its native `JSON` column type means the raw
+request/response payloads stay queryable (`JSON_VALUE`, `JSON_QUERY`, ...) instead of being an
+opaque blob.
+
+**How a turn is captured** (`AgentAuditRecorder`, wired onto both agents in `AgentConfig` via
+`.beforeModelCallbackSync(agentAuditRecorder::beforeModel)` /
+`.afterModelCallbackSync(agentAuditRecorder::afterModel)`):
+
+- `beforeModel` fires immediately before every actual Gemini call, for *either* agent; `afterModel`
+  immediately after. A single user turn is correlated across both agents (and across however many
+  times each agent calls the model) using ADK's own `invocationId` — generated once per incoming
+  user message by `Runner` and threaded through every sub-agent in the `SequentialAgent`.
+- One agent can call Gemini more than once per turn: if `portfolio_analysis` decides to call
+  `searchPortfolio`, that's a first call where the model asks to invoke the tool, then a second
+  call where it reacts to the tool's result. Both are captured, in order, in that agent's
+  `*_llm_calls` JSON array — this is genuinely a list per agent, not a single request/response
+  pair.
+- `AgentChatService.chat` calls `AgentAuditRecorder.finalizeTurn` exactly once per turn, from a
+  `finally` block so it fires on both success and a thrown exception, at which point the
+  accumulated row (plus `input_to_agent2` — specifically agent 1's output text, found by filtering
+  turn events by author — and the final reply) is written with `bigQuery.insertAll(...)`.
+
+**Table schema** (`AuditSchemaInitializer.schema()`):
+
+| Field                    | Type      | Notes                                                        |
+|---------------------------|-----------|---------------------------------------------------------------|
+| `user_prompt_id`           | string    | ADK's `invocationId` — one per user message                   |
+| `user_id`                  | string    | the authenticated username                                    |
+| `session_id`                | string    | == `user_id` in this app (see [Firestore schema](#firestore-schema)) |
+| `user_prompt_text`          | string    | the raw user message                                          |
+| `agent1_name` / `agent2_name` | string  | `portfolio_analysis` / `stock_recommendation`                 |
+| `agent1_llm_calls` / `agent2_llm_calls` | JSON | array of `{requestJson, responseJson, latencyMs, promptTokens, completionTokens}`, one element per real Gemini call that agent made |
+| `agent1_latency_ms` / `agent2_latency_ms` | int64 | sum of that agent's own call latencies |
+| `agent1_prompt_tokens` / `agent1_completion_tokens` (and `agent2_*`) | int64 | summed across that agent's calls |
+| `input_to_agent2`          | string    | agent 1's output text specifically (not just "whatever text preceded agent 2"), via author-filtered event lookup |
+| `final_response_to_user`    | string    | what `AgentChatService.chat` actually returned                |
+| `total_latency_ms`          | int64     | whole-turn wall-clock time                                     |
+| `status` / `error_message`  | string    | `SUCCESS` or `ERROR` (+ the exception message)                 |
+| `created_at`                | timestamp |                                                                 |
+
+**Gotcha:** `@JsonRawValue` on `RoundTrip.requestJson`/`responseJson` matters — those fields are
+already-serialized JSON strings (from ADK's own `LlmRequest.toJson()`/`LlmResponse.toJson()`), and
+without `@JsonRawValue` Jackson would double-escape them into a JSON-string-inside-a-JSON-string
+when the whole `RoundTrip` list gets serialized for the `*_llm_calls` column, breaking BigQuery's
+`JSON` column functions.
+
 ## Environment variables
 
 | Variable                  | Purpose                                                              |
@@ -299,12 +369,12 @@ We don't write to any of this directly — it's entirely managed by
 | `GOOGLE_GENAI_USE_VERTEXAI`| `true` — routes Gemini calls through Vertex AI + ADC instead of an API key |
 | `GOOGLE_CLOUD_PROJECT`     | GCP project for Vertex AI calls                                       |
 | `GOOGLE_CLOUD_LOCATION`    | Vertex AI region, e.g. `us-central1`                                  |
-| `GCP_PROJECT_ID`           | GCP project for the Firestore client (`gcp.project-id` property)      |
+| `GCP_PROJECT_ID`           | GCP project for the Firestore *and* BigQuery clients (`gcp.project-id` property) |
 | `DEMO_USER_USERNAME`/`DEMO_USER_PASSWORD` | overrides the seeded demo login (defaults `demo`/`changeme`) |
 | `FIRESTORE_EMULATOR_HOST`  | if set, Firestore client auto-detects it and uses the local emulator instead of real GCP (no code involved — the client library checks this env var itself) |
 
 No `GOOGLE_API_KEY`/`GEMINI_API_KEY` is used — this project deliberately uses ADC via Vertex AI
-instead (one credential covers both Gemini and Firestore, and it's what Cloud Run will use
+instead (one credential covers Gemini, Firestore, and now BigQuery too, and it's what Cloud Run will use
 automatically later via its attached service account).
 
 ## Gotchas discovered the hard way
@@ -344,5 +414,9 @@ These aren't documented anywhere obvious — found by actually running the app, 
 4. ✅ PDF upload → RAG (chunk/embed/store/search) + Firestore-backed ADK sessions.
 5. ✅ Self-service signup (`signup.html` → `POST /api/auth/register` → `UserRegistrationService`),
    so accounts aren't limited to the one seeded demo user.
-6. ⏳ OpenTelemetry observability — on hold, see [FAQ.md](FAQ.md) for the plan.
+6. ✅ BigQuery audit log of every Gemini call (`AgentAuditRecorder`, see [BigQuery audit
+   log](#bigquery-audit-log)) — covers the "see what the agents actually did" need that full
+   OpenTelemetry tracing was originally on hold for; a proper OTel/tracing setup is still
+   undone and would be complementary (spans/traces vs. this table's one-row-per-turn audit
+   record), not a replacement.
 7. ⏳ Cloud Run deployment — not started.
