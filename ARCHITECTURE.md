@@ -48,7 +48,7 @@ LlmAgent.builder()
     .name("portfolio_analysis")
     .model("gemini-2.5-flash")
     .instruction("You are a portfolio analyst. Use the searchPortfolio tool ...")
-    .tools(FunctionTool.create(StockLookupTool.class, "getStockPrice"))
+    .tools(FunctionTool.create(stockLookupTool, "getStockData"))
     .build();
 ```
 
@@ -62,20 +62,26 @@ takes; when the model decides it needs the tool, ADK invokes the method for you 
 return value back into the conversation.
 
 ```java
-public static Map<String, Object> getStockPrice(
-    @Schema(name = "ticker", description = "Stock ticker symbol, e.g. NVDA") String ticker) { ... }
+public Map<String, Object> searchPortfolio(
+    @Schema(name = "query", description = "...") String query, ToolContext toolContext) { ... }
 
 // registered on the agent:
-FunctionTool.create(StockLookupTool.class, "getStockPrice")   // static method
 FunctionTool.create(portfolioSearchTool, "searchPortfolio")   // instance method (Spring bean)
 ```
 
-Two tool styles are used in this app:
-- **`StockLookupTool`** — a plain `static` method, no dependencies, registered via the
-  `FunctionTool.create(Class, methodName)` overload.
-- **`PortfolioSearchTool`** — a Spring-managed `@Component` with real dependencies (Firestore, an
-  embedding client), registered via the `FunctionTool.create(instance, methodName)` overload
-  instead, so it can be constructor-injected like any other Spring bean.
+Two registration overloads exist: `FunctionTool.create(Class<?>, methodName)` for a plain
+`static` method with no dependencies, or `FunctionTool.create(instance, methodName)` for a
+Spring-managed `@Component`, constructor-injected like any other bean.
+
+Both of this app's tools are registered the instance way today — **`PortfolioSearchTool`**
+(Firestore + an embedding client) and **`StockLookupTool`** (delegates to `MarketDataService`,
+which itself needs Firestore + an HTTP client). `StockLookupTool` actually *started* as a plain
+`static` method — a hardcoded mock price lookup with zero dependencies — and migrated to the
+instance-based pattern the moment it needed something injected (see [Real market
+data](#real-market-data)). That migration is a good illustration of exactly when you'd need to
+switch styles: the static overload works fine right up until a tool needs a real collaborator (a
+database client, an HTTP client, anything Spring manages), at which point it has to become a
+constructor-injected bean instead.
 
 ### `ToolContext` — how a tool learns *who's asking*
 
@@ -170,36 +176,38 @@ vector distances are meaningless.
 | ChatController -> AgentChatService -> Runner          |
 |   -> SequentialAgent (wealthAdvisorPipeline)          |
 |        portfolio_analysis -> stock_recommendation     |
-|        tools: getStockPrice, searchPortfolio (RAG)    |
+|        tools: getStockData, searchPortfolio (RAG)     |
 |                                                       |
 | PortfolioController -> PortfolioIngestionService      |
 |   (PDFBox parse -> TextChunker -> EmbeddingService)   |
 |                                                       |
-| AgentAuditRecorder (beforeModel/afterModel callbacks, |
-|   wired onto both agents in AgentConfig)              |
+| AgentAuditRecorder + ToolUsageRecorder (before/after  |
+|   model + tool callbacks, wired in AgentConfig)       |
 +-------------------------------------------------------+
-                            |                            
-                            v                            
-
-     v                    v                    v                    v
-Firestore: users   Firestore:            Firestore: adk-session/*   BigQuery:
-(auth + profile)   portfolio_vectors     (ADK conversation           wealth_agent
-                    (RAG chunks +        history, via                .agent_audit_log
-                    embeddings)          FirestoreSessionService)    (1 row/turn)
-
-                            |                            
-                            v                            
-          Gemini 2.5 Flash + text-embedding-004          
-                   (Vertex AI, via ADC)                  
+                            |
+          +-----------------+------------------+
+          v                                     v                          v
+   Firestore                           BigQuery: wealth_agent      Financial Modeling Prep
+   users, portfolio_vectors,           .agent_audit_log            (getStockData's real
+   market_data_cache, adk-session/*    .tool_invocations            price/fundamentals —
+   (auth, RAG chunks, 24h stock        .tool_registry                the one non-ADC
+    cache, ADK session history)        (1 row/turn, 1 row/tool call) credential, FMP_API_KEY)
+                            |
+                            v
+          Gemini 2.5 Flash + text-embedding-004
+                   (Vertex AI, via ADC)
 ```
 
 *(`portfolio_analysis` and `stock_recommendation` are the two `SequentialAgent` stages; only
 `portfolio_analysis` has tools — `stock_recommendation` has none, it just reads
 `{portfolio_analysis}`'s output. See [Agentic AI / ADK concepts](#agentic-ai--adk-concepts) above
-for what each box/arrow means. `AgentAuditRecorder` sits outside the request path proper — it's
-model-call callbacks fired by ADK itself, not something `AgentChatService` calls directly except
-once, at the very end of a turn, to flush the accumulated row. See [BigQuery
-audit log](#bigquery-audit-log).)*
+for what each box/arrow means. `AgentAuditRecorder`/`ToolUsageRecorder` sit outside the request
+path proper — they're model-call/tool-call callbacks fired by ADK itself, not something
+`AgentChatService` calls directly except once, at the very end of a turn, to flush each
+recorder's accumulated rows. See [BigQuery audit log](#bigquery-audit-log). Financial Modeling
+Prep is the one external, non-GCP call this app makes — see [Real market
+data](#real-market-data) for why it's fronted by a Firestore cache instead of being called
+per-message.)*
 
 ## End-to-end request flows
 
@@ -239,7 +247,9 @@ audit log](#bigquery-audit-log).)*
 3. **Stage 1 — `portfolio_analysis`**: the model reads the conversation, and can call:
    - `searchPortfolio` — embeds the user's question, runs a Firestore vector `findNearest` query
      scoped to `whereEqualTo("userId", toolContext.userId())`, returns the closest chunks.
-   - `getStockPrice` — looks up a (currently mocked) stock price by ticker.
+   - `getStockData` — real price + fundamentals (P/E, PEG, forward P/E, EPS growth, free cash
+     flow per share) by ticker, from Financial Modeling Prep behind a 24h Firestore cache; see
+     [Real market data](#real-market-data).
    It writes a short analysis into session state under `portfolio_analysis`.
 4. **Stage 2 — `stock_recommendation`**: its instruction has `{portfolio_analysis}` substituted
    in, so it "reads" stage 1's analysis as plain text, and writes the final, user-facing reply
@@ -504,7 +514,7 @@ turn," these tables are for "aggregate across many turns."
 | `invocation_id`     | string    | primary key — ADK's own `functionCallId` (see rationale below)       |
 | `user_prompt_id`     | string    | `NOT ENFORCED` foreign key → `agent_audit_log.user_prompt_id`        |
 | `agent_name`         | string    | which agent made the call                                            |
-| `tool_name`           | string    | e.g. `getStockPrice`, `searchPortfolio`                              |
+| `tool_name`           | string    | e.g. `getStockData`, `searchPortfolio`                               |
 | `tool_input`           | JSON      | the tool's arguments, as the model supplied them                     |
 | `tool_output`          | JSON      | the tool's return value (absent on error)                            |
 | `status`               | string    | `SUCCESS` or `ERROR`                                                 |
@@ -639,4 +649,10 @@ These aren't documented anywhere obvious — found by actually running the app, 
    actually earning their keep" need that full OpenTelemetry tracing was originally on hold for;
    a proper OTel/tracing setup is still undone and would be complementary (spans/traces vs. these
    tables' one-row-per-turn / one-row-per-tool-call records), not a replacement.
-7. ⏳ Cloud Run deployment — not started.
+7. ✅ Real market data (`getStockData`/`MarketDataService`, see [Real market
+   data](#real-market-data)) — replaced the hardcoded mock price map with real price/P/E/PEG/
+   forward-P/E/EPS-growth/free-cash-flow from Financial Modeling Prep's free tier, fronted by a
+   24h Firestore cache shared across every user. The one non-ADC credential in this app
+   (`FMP_API_KEY`); log-forging guardrails (`com.wealth.advisor.guardrails.ContentSanitizer`)
+   added alongside it.
+8. ⏳ Cloud Run deployment — not started.

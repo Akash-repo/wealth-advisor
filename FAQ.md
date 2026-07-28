@@ -161,13 +161,15 @@ way. That portability is the whole reason this project uses ADC instead of an AP
 
 ## Does running locally actually hit real Firestore/Gemini, or is anything mocked?
 
-Nothing is mocked at the infrastructure level (the only mocked thing in this app is
-`StockLookupTool`'s price data). Running locally with the env vars above talks to the *real*
-`agentic-ai-503223` project: real Firestore (visible in the
+Nothing is mocked anymore — `StockLookupTool` used to return hardcoded prices, but now calls
+real Financial Modeling Prep data (see ARCHITECTURE.md's [Real market
+data](ARCHITECTURE.md#real-market-data)). Running locally with the env vars above talks to the
+*real* `agentic-ai-503223` project: real Firestore (visible in the
 [Firestore Console](https://console.cloud.google.com/firestore/databases) under `users`,
-`portfolio_vectors`, and ADK's own `adk-session` collection) and real Gemini via Vertex AI
-(`aiplatform.googleapis.com`, not the public Gemini API key endpoint). This was confirmed by
-actually logging in, chatting, and uploading a PDF end to end earlier in this project's history.
+`portfolio_vectors`, `market_data_cache`, and ADK's own `adk-session` collection) and real Gemini
+via Vertex AI (`aiplatform.googleapis.com`, not the public Gemini API key endpoint). This was
+confirmed by actually logging in, chatting, uploading a PDF, and looking up real stock data end
+to end earlier in this project's history.
 
 ## Is there a signup page, or only the one seeded demo user?
 
@@ -225,5 +227,5 @@ alongside whatever you're stepping through, e.g.:
 ```
 DEBUG ... AgentChatService      : Reusing existing Firestore session for userId='demo'
 DEBUG ... AgentChatService      : Running turn for userId='demo': "What is Tesla trading at?"
-DEBUG ... StockLookupTool       : getStockPrice(ticker='TSLA') -> 342.75
+DEBUG ... MarketDataService     : getStockData(ticker='TSLA') — cache miss, calling FMP
 ```
