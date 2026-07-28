@@ -385,6 +385,16 @@ just not having the field.
   failure just means a live fetch instead of a stale answer; a write failure costs nothing beyond
   the next request re-fetching, since the caller already has the freshly fetched data regardless.
 
+**Log forging (CWE-117)**: the ticker logged throughout this class is ultimately model-supplied
+(indirectly, from the user's message), and an exception message can in principle echo back part
+of a malformed external response — neither is trusted to be free of characters that could forge or
+split a log line. Both are run through `com.wealth.advisor.guardrails.ContentSanitizer`'s
+`sanitizeForLog` before hitting any `log.warn`/`log.debug` call in this class. That package is
+deliberately scoped narrowly today (log-safety only) but is where future validation of user
+prompts, LLM responses, or tool responses — e.g. against a rogue or compromised MCP server
+returning content crafted to manipulate the agent — should land, rather than being scattered
+inline across `MarketDataService`, `AgentChatService`, etc.
+
 **The tool waits for the cache write to finish** before returning (`writeCache(...)` blocks on
 Firestore's `ApiFuture#get()`) rather than firing it in the background — the write is fast (tens
 of ms) next to the 4 parallel HTTP calls that dominate the tool's latency, and blocking on it

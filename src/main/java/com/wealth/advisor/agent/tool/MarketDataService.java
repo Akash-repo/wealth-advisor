@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.MissingNode;
 import com.fasterxml.jackson.databind.node.NullNode;
 import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;
+import com.wealth.advisor.guardrails.ContentSanitizer;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -43,6 +44,12 @@ import org.springframework.stereotype.Component;
  * logged as a warning, that field just comes back absent — rather than failing the whole lookup.
  * Genuinely unexpected exceptions (a bug in this class, not an external failure) are left to
  * propagate so {@code ToolUsageRecorder.onToolError} still captures them for real.
+ *
+ * <p>The ticker and any exception message logged here are run through {@link
+ * ContentSanitizer#sanitizeForLog} first — {@code ticker} is ultimately model-supplied (from the
+ * conversation, indirectly the user), and an exception message can in principle echo back part of
+ * a malformed external response, so neither is trusted to be free of characters that could forge
+ * or split a log line (CWE-117) once written to a text log.
  */
 @Component
 public class MarketDataService {
@@ -57,10 +64,12 @@ public class MarketDataService {
 	private final HttpClient httpClient = HttpClient.newHttpClient();
 	private final ObjectMapper objectMapper = new ObjectMapper();
 	private final String apiKey;
+	private final ContentSanitizer contentSanitizer;
 
-	public MarketDataService(Firestore firestore, @Value("${fmp.api-key:}") String apiKey) {
+	public MarketDataService(Firestore firestore, @Value("${fmp.api-key:}") String apiKey, ContentSanitizer contentSanitizer) {
 		this.firestore = firestore;
 		this.apiKey = apiKey;
+		this.contentSanitizer = contentSanitizer;
 	}
 
 	/** Ticker in, a flat {@code Map} of price + fundamentals out — cached for 24h per ticker. */
@@ -68,17 +77,19 @@ public class MarketDataService {
 		String symbol = ticker.toUpperCase();
 
 		if (apiKey.isBlank()) {
-			log.warn("getStockData(ticker='{}') called but fmp.api-key is not configured", symbol);
+			log.warn(
+					"getStockData(ticker='{}') called but fmp.api-key is not configured",
+					contentSanitizer.sanitizeForLog(symbol));
 			return Map.of("ticker", symbol, "found", false, "error", "Market data is not configured.");
 		}
 
 		Optional<Map<String, Object>> cached = readCache(symbol);
 		if (cached.isPresent()) {
-			log.debug("getStockData(ticker='{}') — cache hit", symbol);
+			log.debug("getStockData(ticker='{}') — cache hit", contentSanitizer.sanitizeForLog(symbol));
 			return cached.get();
 		}
 
-		log.debug("getStockData(ticker='{}') — cache miss, calling FMP", symbol);
+		log.debug("getStockData(ticker='{}') — cache miss, calling FMP", contentSanitizer.sanitizeForLog(symbol));
 		Map<String, Object> fresh = fetchFromFmp(symbol);
 		writeCache(symbol, fresh);
 		return fresh;
@@ -138,19 +149,30 @@ public class MarketDataService {
 						response -> {
 							if (response.statusCode() != 200) {
 								log.warn(
-										"FMP '{}' call for ticker='{}' returned HTTP {}", endpoint, symbol, response.statusCode());
+										"FMP '{}' call for ticker='{}' returned HTTP {}",
+										endpoint,
+										contentSanitizer.sanitizeForLog(symbol),
+										response.statusCode());
 								return (JsonNode) NullNode.getInstance();
 							}
 							try {
 								return objectMapper.readTree(response.body());
 							} catch (Exception e) {
-								log.warn("Failed to parse FMP '{}' response for ticker='{}'", endpoint, symbol, e);
+								log.warn(
+										"Failed to parse FMP '{}' response for ticker='{}'",
+										endpoint,
+										contentSanitizer.sanitizeForLog(symbol),
+										e);
 								return NullNode.getInstance();
 							}
 						})
 				.exceptionally(
 						e -> {
-							log.warn("FMP '{}' call for ticker='{}' failed: {}", endpoint, symbol, e.getMessage());
+							log.warn(
+									"FMP '{}' call for ticker='{}' failed: {}",
+									endpoint,
+									contentSanitizer.sanitizeForLog(symbol),
+									contentSanitizer.sanitizeForLog(e.getMessage()));
 							return NullNode.getInstance();
 						});
 	}
@@ -218,7 +240,10 @@ public class MarketDataService {
 			}
 			return Optional.of(doc.getData());
 		} catch (Exception e) {
-			log.warn("Failed to read market data cache for '{}' — falling through to a live fetch: {}", symbol, e.getMessage());
+			log.warn(
+					"Failed to read market data cache for '{}' — falling through to a live fetch: {}",
+					contentSanitizer.sanitizeForLog(symbol),
+					contentSanitizer.sanitizeForLog(e.getMessage()));
 			return Optional.empty();
 		}
 	}
@@ -229,7 +254,10 @@ public class MarketDataService {
 		} catch (Exception e) {
 			// Not fatal — the caller already has the freshly fetched data regardless of whether
 			// this write succeeded; the only cost is the next request re-fetching from FMP.
-			log.warn("Failed to write market data cache for '{}': {}", symbol, e.getMessage());
+			log.warn(
+					"Failed to write market data cache for '{}': {}",
+					contentSanitizer.sanitizeForLog(symbol),
+					contentSanitizer.sanitizeForLog(e.getMessage()));
 		}
 	}
 }
