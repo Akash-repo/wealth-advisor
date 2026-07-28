@@ -6,6 +6,7 @@ import com.google.adk.tools.FunctionTool;
 import com.wealth.advisor.agent.tool.PortfolioSearchTool;
 import com.wealth.advisor.agent.tool.StockLookupTool;
 import com.wealth.advisor.audit.AgentAuditRecorder;
+import com.wealth.advisor.audit.ToolUsageRecorder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -36,7 +37,9 @@ public class AgentConfig {
 	 */
 	@Bean
 	public LlmAgent portfolioAnalysisAgent(
-			PortfolioSearchTool portfolioSearchTool, AgentAuditRecorder agentAuditRecorder) {
+			PortfolioSearchTool portfolioSearchTool,
+			AgentAuditRecorder agentAuditRecorder,
+			ToolUsageRecorder toolUsageRecorder) {
 		return LlmAgent.builder()
 				.name("portfolio_analysis")
 				.description(
@@ -62,6 +65,11 @@ public class AgentConfig {
 				// AgentAuditRecorder's javadoc for how a whole turn gets correlated across agents.
 				.beforeModelCallbackSync(agentAuditRecorder::beforeModel)
 				.afterModelCallbackSync(agentAuditRecorder::afterModel)
+				// Same idea, one level down: every real tool call this agent makes (searchPortfolio,
+				// getStockPrice) gets recorded to BigQuery too — see ToolUsageRecorder's javadoc.
+				.beforeToolCallbackSync(toolUsageRecorder::beforeTool)
+				.afterToolCallbackSync(toolUsageRecorder::afterTool)
+				.onToolErrorCallbackSync(toolUsageRecorder::onToolError)
 				.build();
 	}
 
@@ -70,7 +78,8 @@ public class AgentConfig {
 	 * {portfolio_analysis}} placeholder below) into the actual reply shown to the user.
 	 */
 	@Bean
-	public LlmAgent stockRecommendationAgent(AgentAuditRecorder agentAuditRecorder) {
+	public LlmAgent stockRecommendationAgent(
+			AgentAuditRecorder agentAuditRecorder, ToolUsageRecorder toolUsageRecorder) {
 		return LlmAgent.builder()
 				.name("stock_recommendation")
 				.description("Turns a portfolio analysis into a balanced recommendation with risk warnings.")
@@ -87,6 +96,11 @@ public class AgentConfig {
 						""")
 				.beforeModelCallbackSync(agentAuditRecorder::beforeModel)
 				.afterModelCallbackSync(agentAuditRecorder::afterModel)
+				// No tools on this agent today, but wired for when it (or a future agent) gets one —
+				// costs nothing and means nobody has to remember to add this later.
+				.beforeToolCallbackSync(toolUsageRecorder::beforeTool)
+				.afterToolCallbackSync(toolUsageRecorder::afterTool)
+				.onToolErrorCallbackSync(toolUsageRecorder::onToolError)
 				.build();
 	}
 

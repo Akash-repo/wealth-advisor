@@ -3,15 +3,20 @@ package com.wealth.advisor.audit;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.DatasetInfo;
 import com.google.cloud.bigquery.Field;
+import com.google.cloud.bigquery.PrimaryKey;
 import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.StandardSQLTypeName;
 import com.google.cloud.bigquery.StandardTableDefinition;
+import com.google.cloud.bigquery.Table;
+import com.google.cloud.bigquery.TableConstraints;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
+import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 /**
@@ -24,8 +29,19 @@ import org.springframework.stereotype.Component;
  * that agent made — usually one, more if it called a tool and needed a follow-up call to react
  * to the tool's result) rather than a single request/response pair, because one agent can
  * genuinely call the LLM more than once within a single user turn.
+ *
+ * <p>Declares {@code user_prompt_id} as this table's primary key (BigQuery {@code NOT ENFORCED}
+ * — metadata only, see {@code ARCHITECTURE.md}'s "Tool usage tracking" section for why that's
+ * still worth doing) so {@code tool_invocations} can declare a foreign key back to it. Existing
+ * deployments that already had this table before that constraint was added get it retrofitted
+ * on the next startup rather than requiring a manual migration.
+ *
+ * <p>{@code @Order(1)} — must run, and create/retrofit {@code agent_audit_log}'s primary key,
+ * before {@link ToolUsageSchemaInitializer} tries to create {@code tool_invocations}' foreign key
+ * pointing at it; BigQuery requires the referenced primary key to already exist.
  */
 @Component
+@Order(1)
 public class AuditSchemaInitializer implements ApplicationRunner {
 
 	private static final Logger log = LoggerFactory.getLogger(AuditSchemaInitializer.class);
@@ -46,9 +62,16 @@ public class AuditSchemaInitializer implements ApplicationRunner {
 				bigQuery.create(DatasetInfo.newBuilder(DATASET).build());
 				log.info("Created BigQuery dataset '{}'", DATASET);
 			}
-			if (bigQuery.getTable(DATASET, TABLE) == null) {
-				bigQuery.create(TableInfo.of(TableId.of(DATASET, TABLE), StandardTableDefinition.of(schema())));
+			Table table = bigQuery.getTable(DATASET, TABLE);
+			if (table == null) {
+				bigQuery.create(
+						TableInfo.newBuilder(TableId.of(DATASET, TABLE), StandardTableDefinition.of(schema()))
+								.setTableConstraints(primaryKeyConstraint())
+								.build());
 				log.info("Created BigQuery table '{}.{}'", DATASET, TABLE);
+			} else if (table.getTableConstraints() == null || table.getTableConstraints().getPrimaryKey() == null) {
+				bigQuery.update(table.toBuilder().setTableConstraints(primaryKeyConstraint()).build());
+				log.info("Retrofitted primary key constraint onto existing BigQuery table '{}.{}'", DATASET, TABLE);
 			}
 		} catch (Exception e) {
 			log.warn(
@@ -56,6 +79,12 @@ public class AuditSchemaInitializer implements ApplicationRunner {
 							+ " enabled and reachable?): {}",
 					e.getMessage());
 		}
+	}
+
+	private static TableConstraints primaryKeyConstraint() {
+		return TableConstraints.newBuilder()
+				.setPrimaryKey(PrimaryKey.newBuilder().setColumns(List.of("user_prompt_id")).build())
+				.build();
 	}
 
 	private static Schema schema() {

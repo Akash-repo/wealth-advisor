@@ -61,6 +61,7 @@ public final class StockLookupTool {
 	 * @return a map describing the lookup result; returned as-is to the model as the tool's
 	 *     "function response", which it then reads to compose its reply
 	 */
+	@Schema(description = "Looks up a stock's current price by ticker symbol.")
 	public static Map<String, Object> getStockPrice(
 			@Schema(name = "ticker", description = "Stock ticker symbol, e.g. NVDA or AAPL") String ticker) {
 		String symbol = ticker.toUpperCase();

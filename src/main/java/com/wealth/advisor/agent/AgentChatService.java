@@ -10,6 +10,7 @@ import com.google.cloud.firestore.Firestore;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import com.wealth.advisor.audit.AgentAuditRecorder;
+import com.wealth.advisor.audit.ToolUsageRecorder;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -46,10 +47,11 @@ import org.springframework.stereotype.Service;
  * get-or-create check itself before every turn instead of relying on that flag.
  *
  * <p>Every real Gemini call either agent makes is separately recorded to BigQuery by {@link
- * AgentAuditRecorder} (wired onto both agents in {@code AgentConfig}) — this class only needs to
- * call {@link AgentAuditRecorder#finalizeTurn} once the turn is over (success or failure) so that
- * accumulated data gets written and the per-agent hand-off ({@code input_to_agent2}) and final
- * reply get attached to the same row.
+ * AgentAuditRecorder}, and every real tool call by {@link ToolUsageRecorder} (both wired onto both
+ * agents in {@code AgentConfig}) — this class only needs to call their respective {@code
+ * finalizeTurn} methods once the turn is over (success or failure) so that accumulated data gets
+ * written; for {@code AgentAuditRecorder} that also attaches the per-agent hand-off ({@code
+ * input_to_agent2}) and final reply to the same row.
  *
  * @see AgentConfig for how {@code wealthAdvisorPipeline} (the {@link SequentialAgent} this class
  *     runs) is assembled
@@ -61,13 +63,15 @@ public class AgentChatService {
 
 	private final Runner runner;
 	private final AgentAuditRecorder agentAuditRecorder;
+	private final ToolUsageRecorder toolUsageRecorder;
 	private final String agent1Name;
 	private final String agent2Name;
 
 	public AgentChatService(
 			SequentialAgent wealthAdvisorPipeline,
 			Firestore firestore,
-			AgentAuditRecorder agentAuditRecorder) {
+			AgentAuditRecorder agentAuditRecorder,
+			ToolUsageRecorder toolUsageRecorder) {
 		this.runner =
 				Runner.builder()
 						.agent(wealthAdvisorPipeline)
@@ -75,6 +79,7 @@ public class AgentChatService {
 						.sessionService(new FirestoreSessionService(firestore))
 						.build();
 		this.agentAuditRecorder = agentAuditRecorder;
+		this.toolUsageRecorder = toolUsageRecorder;
 		List<? extends BaseAgent> subAgents = wealthAdvisorPipeline.subAgents();
 		this.agent1Name = subAgents.get(0).name();
 		this.agent2Name = subAgents.get(1).name();
@@ -134,6 +139,7 @@ public class AgentChatService {
 			long totalLatencyMs = System.currentTimeMillis() - startedAt;
 			agentAuditRecorder.finalizeTurn(
 					userId, agent1Name, agent2Name, inputToAgent2, reply, totalLatencyMs, status, errorMessage);
+			toolUsageRecorder.finalizeTurn(userId);
 			log.info(
 					"Turn complete for userId='{}': {} ms, status={}, replyLength={}",
 					userId,

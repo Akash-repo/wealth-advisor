@@ -362,6 +362,102 @@ without `@JsonRawValue` Jackson would double-escape them into a JSON-string-insi
 when the whole `RoundTrip` list gets serialized for the `*_llm_calls` column, breaking BigQuery's
 `JSON` column functions.
 
+### Tool usage tracking (`tool_invocations` / `tool_registry`)
+
+**The problem this solves:** `agent_audit_log`'s `agent1_llm_calls`/`agent2_llm_calls` JSON arrays
+already contain every tool call ADK made (see the request/response JSON above — a tool call shows
+up as a `functionCall` part), but answering "which tools are actually being used, by which agent,
+how often, how slow, how often do they error" from that requires `JSON_QUERY_ARRAY` gymnastics
+across every row. That doesn't scale as the number of registered tools and agents grows — this
+project has 2 tools today, but the whole point of tracking usage is to support a future with
+hundreds of tools across many agents, where you actually need to answer "which of these are dead
+weight" from real data rather than institutional memory. So tool calls also get written to two
+dedicated, normalized tables, in addition to (not instead of) staying inside `agent_audit_log`'s
+JSON blobs — that JSON is still the right place for "replay exactly what happened in this one
+turn," these tables are for "aggregate across many turns."
+
+**`tool_invocations`** — one row per real tool call, written by `ToolUsageRecorder.finalizeTurn`:
+
+| Field             | Type      | Notes                                                              |
+|--------------------|-----------|----------------------------------------------------------------------|
+| `invocation_id`     | string    | primary key — ADK's own `functionCallId` (see rationale below)       |
+| `user_prompt_id`     | string    | `NOT ENFORCED` foreign key → `agent_audit_log.user_prompt_id`        |
+| `agent_name`         | string    | which agent made the call                                            |
+| `tool_name`           | string    | e.g. `getStockPrice`, `searchPortfolio`                              |
+| `tool_input`           | JSON      | the tool's arguments, as the model supplied them                     |
+| `tool_output`          | JSON      | the tool's return value (absent on error)                            |
+| `status`               | string    | `SUCCESS` or `ERROR`                                                 |
+| `error_message`        | string    | populated only on `ERROR`                                            |
+| `latency_ms`           | int64     | wall-clock time of just that one tool call                           |
+| `called_at`            | timestamp | partitioning key                                                     |
+
+Partitioned by day on `called_at`, clustered by `(tool_name, agent_name)` — "tool X's usage over
+the last 30 days" and "everything agent Y called" are the queries this is actually for, and both
+prune to a fraction of the table instead of a full scan as row count grows.
+
+**`tool_registry`** — one row per distinct tool name that has ever existed in code, kept in sync
+by `ToolUsageSchemaInitializer.syncToolRegistry` from the live `LlmAgent` bean list on every
+startup (a `MERGE` upsert, never deletes — a tool that gets removed from code stays in the
+registry with a stale `last_seen_at`, which is itself useful signal):
+
+| Field                  | Type      | Notes                                          |
+|-------------------------|-----------|--------------------------------------------------|
+| `tool_name`              | string    | primary key                                        |
+| `description`             | string    | from the tool's own `@Schema`/description         |
+| `first_registered_at`      | timestamp |                                                     |
+| `last_seen_at`             | timestamp | bumped every app startup the tool is still present |
+
+Deliberately does **not** store which agent(s) own a tool — that's usage data, derivable by
+joining `tool_invocations` grouped by `tool_name`/`agent_name`, and storing it redundantly here
+would just be a second copy that could drift from the truth.
+
+**How a call gets captured:** ADK exposes `beforeToolCallbackSync`/`afterToolCallbackSync`/
+`onToolErrorCallbackSync` on `LlmAgent.builder()` — the exact same shape as the model callbacks
+`AgentAuditRecorder` already uses, just one level down (around the actual tool invocation rather
+than the Gemini call that requested it). `ToolContext` (passed to all three) already carries a
+`functionCallId()` that ADK assigns once per real tool call — `ToolUsageRecorder` reuses that
+directly as `invocation_id` rather than generating a second id that would just duplicate it.
+Rows are buffered per turn (keyed by ADK's `invocationId`, same pattern as `AgentAuditRecorder`)
+and flushed as **one batched `insertAll`** from `finalizeTurn` — a turn that calls five tools does
+one BigQuery write, not five. That's what keeps this cheap and within streaming-insert throughput
+limits as tool/agent count grows, not just at today's scale.
+
+**Options considered and rejected:**
+
+1. **Keep tool-call analytics inside `agent_audit_log`'s JSON only, no new tables.** Rejected —
+   works for "replay one turn," falls over for "aggregate across tools/agents," which is the
+   actual goal (find unused tools, spot slow/error-prone ones).
+2. **Write one `insertAll` per tool call, immediately in `afterTool`/`onToolError`.** Rejected in
+   favor of batching per turn — N tool calls in a turn would mean N separate API round-trips
+   instead of one, which is strictly worse on both latency and (at high tool-call volume)
+   streaming-insert throughput, for no benefit; nothing needs the row visible mid-turn.
+3. **Generate our own UUID per tool call instead of reusing ADK's `functionCallId`.** Rejected —
+   ADK already assigns a unique id per real tool invocation; inventing a second id space would
+   just be redundant bookkeeping. (Still falls back to a generated UUID if `functionCallId()` is
+   ever absent, defensively.)
+4. **Store `owning_agent` as a column on `tool_registry`.** Rejected — a tool can in principle be
+   used by more than one agent, and which agents use which tools is usage history, not the tool's
+   own static identity; that question is already answerable by joining against `tool_invocations`
+   without maintaining a second, potentially-stale copy of the same fact.
+5. **Hand-maintain `tool_registry` (manual `INSERT`s when a tool is added).** Rejected — drifts
+   from reality the first time someone adds a tool and forgets the second step. Auto-deriving it
+   from the actually-configured `LlmAgent` beans at startup means it can never be wrong about
+   what's registered, at the cost of a small `MERGE` DML statement per tool on every app startup —
+   fine at this project's scale and dev-iteration cadence; if that ever becomes a real concern
+   (BigQuery DML has historically had per-table daily-statement quotas), the fix is to only run
+   this sync on deploy rather than on every process start, not to hand-maintain the table.
+6. **Enforce the `user_prompt_id` foreign key for real.** Not possible — BigQuery has no runtime
+   FK/PK enforcement, only `NOT ENFORCED` declarations. Declared anyway because it costs nothing,
+   documents the relationship in the schema itself, and BI tools/query generators that read
+   BigQuery's constraint metadata pick it up automatically for join suggestions. This is also why
+   `agent_audit_log` needed a `user_prompt_id` primary key retrofitted onto it (see
+   `AuditSchemaInitializer`) — a `NOT ENFORCED` FK still has to reference a declared PK/unique
+   constraint on the other table, even though nothing actually checks it at insert time.
+7. **Retrofit partitioning onto the existing `agent_audit_log` table while touching this area
+   anyway.** Not done here — out of scope for what was asked, and BigQuery can't add partitioning
+   to an already-created table without recreating it (a bigger, riskier change than adding a
+   constraint). Flagged as a reasonable follow-up, not done as a drive-by.
+
 ## Environment variables
 
 | Variable                  | Purpose                                                              |
@@ -414,9 +510,10 @@ These aren't documented anywhere obvious — found by actually running the app, 
 4. ✅ PDF upload → RAG (chunk/embed/store/search) + Firestore-backed ADK sessions.
 5. ✅ Self-service signup (`signup.html` → `POST /api/auth/register` → `UserRegistrationService`),
    so accounts aren't limited to the one seeded demo user.
-6. ✅ BigQuery audit log of every Gemini call (`AgentAuditRecorder`, see [BigQuery audit
-   log](#bigquery-audit-log)) — covers the "see what the agents actually did" need that full
-   OpenTelemetry tracing was originally on hold for; a proper OTel/tracing setup is still
-   undone and would be complementary (spans/traces vs. this table's one-row-per-turn audit
-   record), not a replacement.
+6. ✅ BigQuery audit trail of every Gemini call and every tool call (`AgentAuditRecorder` +
+   `ToolUsageRecorder`, see [BigQuery audit log](#bigquery-audit-log) and its "Tool usage
+   tracking" subsection) — covers the "see what the agents actually did, and which tools are
+   actually earning their keep" need that full OpenTelemetry tracing was originally on hold for;
+   a proper OTel/tracing setup is still undone and would be complementary (spans/traces vs. these
+   tables' one-row-per-turn / one-row-per-tool-call records), not a replacement.
 7. ⏳ Cloud Run deployment — not started.
