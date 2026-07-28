@@ -17,6 +17,7 @@ file grows as new questions come up.
 - [Architecture diagram](#architecture-diagram)
 - [End-to-end request flows](#end-to-end-request-flows)
 - [Firestore schema](#firestore-schema)
+- [Real market data](#real-market-data)
 - [BigQuery audit log](#bigquery-audit-log)
 - [Environment variables](#environment-variables)
 - [Gotchas discovered the hard way](#gotchas-discovered-the-hard-way)
@@ -278,6 +279,22 @@ audit log](#bigquery-audit-log).)*
 **Requires a composite index** (equality filter on `userId` + vector index on `embedding`) — see
 [Gotchas](#gotchas-discovered-the-hard-way).
 
+### `market_data_cache` — real stock data, cached across all users (this app's own collection)
+
+| Field                  | Type      | Notes                                                    |
+|-------------------------|-----------|-------------------------------------------------------------|
+| *(document id)*          | string    | the ticker symbol, uppercased, e.g. `AAPL` — direct get, no query |
+| `found`                   | boolean   | `false` if the ticker doesn't exist / FMP has nothing on it |
+| `price`                   | number    | nullable — absent if that one FMP call failed                |
+| `peRatio` / `pegRatio`      | number    | nullable                                                       |
+| `forwardPeRatio`             | number    | nullable — computed by this app, not returned by FMP directly  |
+| `epsGrowth`                   | number    | nullable                                                       |
+| `freeCashFlowPerShare`          | number    | nullable                                                       |
+| `asOf`                            | string (ISO instant) | when this doc was fetched — checked against a 24h TTL in code |
+
+See [Real market data](#real-market-data) for the full design (why Firestore, why a 24h TTL, how
+partial FMP failures are handled).
+
 ### ADK's own collections (managed by `FirestoreSessionService`, not our code)
 
 ADK's `FirestoreSessionService` picks its own schema, rooted at a collection literally called
@@ -305,6 +322,100 @@ user-state (collection)
 
 We don't write to any of this directly — it's entirely managed by
 `com.google.adk.sessions.FirestoreSessionService`, constructed once in `AgentChatService`.
+
+## Real market data
+
+`StockLookupTool`/`getStockData` originally returned prices from a hardcoded mock map. It now
+calls [Financial Modeling Prep](https://financialmodelingprep.com)'s free tier for real price,
+P/E, PEG, forward P/E, EPS growth, and free cash flow per share — fronted by the
+[`market_data_cache`](#firestore-schema) Firestore collection with a 24h TTL, since this data is
+the same for every user asking about a given ticker (no reason to refetch per-user or per-message).
+
+**Split across two classes**: `StockLookupTool` (`agent/tool/StockLookupTool.java`) is the thin
+ADK-facing surface — the `@Schema`-annotated method the model actually calls. `MarketDataService`
+(`agent/tool/MarketDataService.java`) does the real work: check the cache, call FMP on a miss,
+combine, write back. Split out because the FMP integration (4 parallel HTTP calls, per-call
+failure handling, forward-P/E computation) is meaningfully more logic than `PortfolioSearchTool`
+has in one method — keeping it in its own class keeps `StockLookupTool` a one-line delegate, easy
+to read as "this is the tool's contract with the model," with the mechanics elsewhere.
+
+**Why FMP specifically, and what's actually free**: verified live against a real free-tier key
+(not just docs, which undersold it) — `/stable/quote`, `/stable/ratios`, `/stable/financial-growth`,
+and `/stable/analyst-estimates` all responded with real data, no paywall errors. No credit card
+required, 250 requests/day. That budget is per-app, not per-user, specifically *because* of the
+cache — with a 24h TTL, the daily cap is really "~60 distinct tickers/day across every user
+combined" (4 calls per cache-miss ticker), not "60 chat messages/day."
+
+**Why 4 parallel calls via `CompletableFuture`, not sequential or Spring `@Async`**: `getStockData`
+needs price (`quote`), P/E + PEG + FCF/share (`ratios`), EPS growth (`financial-growth`), and a
+forward P/E computed from consensus EPS estimates (`analyst-estimates`) — four independent FMP
+endpoints. `java.net.http.HttpClient.sendAsync(...)` + `CompletableFuture.allOf(...)` fires all
+four concurrently with zero new dependencies (`HttpClient` has shipped in the JDK since 11) and
+ties up no thread while waiting on the network, since `sendAsync` is non-blocking under the hood.
+Spring's `@Async` was considered and rejected: it would need `@EnableAsync` plus an explicit
+`TaskExecutor` bean (Spring Boot's default creates an unpooled thread per call), a second bean
+class to dodge the self-invocation proxy gotcha, and — since it only pays off if the wrapped call
+is itself synchronous — would tie up a real pooled thread for each call's full round-trip, which
+is strictly less efficient than `sendAsync`'s already-non-blocking I/O. More ceremony *and* worse
+resource usage for this specific shape of work (a handful of near-identical outbound GETs, fully
+synchronous call site).
+
+**Forward P/E needed real care, not `array[0]`**: forward P/E = current price ÷ the *nearest
+upcoming* fiscal year's consensus EPS. Live testing showed FMP's `analyst-estimates` array is not
+reliably ordered nearest-year-first (a real response returned FY2030 before FY2029) — so
+`MarketDataService.computeForwardPe` scans every entry's own `date` field for the closest one
+that hasn't already passed, rather than trusting array order. Getting this silently wrong (e.g.
+dividing today's price by a 4-years-out EPS estimate) would produce a confidently-stated, wrong
+number from a tool whose whole job is giving a "wealth advisor" agent real figures — worse than
+just not having the field.
+
+**Two-tier failure handling** (a deliberate distinction, not blanket try/catch):
+- *Predictable failures* — one FMP endpoint times out, rate-limits, or returns a bad ticker — are
+  caught **per endpoint** inside `fetchEndpoint`'s `.exceptionally(...)`, logged as a warning, and
+  that field just comes back `null` in the combined result rather than failing the whole call.
+  `quote` coming back empty is treated as `found: false` immediately (every FMP endpoint
+  independently reports an unknown ticker as an empty array, so there's no need to inspect the
+  other 3 to know the ticker doesn't exist).
+- *Genuinely unexpected failures* (a bug in this app's own code, not an external service being
+  flaky) are deliberately **not** caught here — they're left to propagate so
+  `ToolUsageRecorder.onToolError` still captures them into `tool_invocations` with `status=ERROR`
+  for real, rather than a blanket catch silently defeating the auditing already built for exactly
+  this.
+- Firestore cache reads/writes fail the same "warn and continue" way — a cache miss on a read
+  failure just means a live fetch instead of a stale answer; a write failure costs nothing beyond
+  the next request re-fetching, since the caller already has the freshly fetched data regardless.
+
+**The tool waits for the cache write to finish** before returning (`writeCache(...)` blocks on
+Firestore's `ApiFuture#get()`) rather than firing it in the background — the write is fast (tens
+of ms) next to the 4 parallel HTTP calls that dominate the tool's latency, and blocking on it
+means "the tool returned" and "the next user's request can hit the cache" happen together, with
+no window where a background write could silently fail unobserved.
+
+**Options considered and rejected:**
+
+1. **Redis/Memcached (GCP Memorystore) instead of Firestore for the cache.** Rejected —
+   Memorystore has no public IP (VPC-only; this app runs locally today and isn't on Cloud Run yet,
+   so there's no VPC to put it in without standing up a tunnel/bastion purely for a cache), its
+   data-plane isn't ADC-authenticated the way every other GCP service this app uses is (it speaks
+   plain Redis protocol, a different credential story), and it has no perpetual free tier — it's
+   an always-on billed instance, which conflicts with this project's explicit "free tier only, no
+   credit card" constraint. Worth revisiting once this app is actually on Cloud Run (Serverless
+   VPC Access makes Memorystore reachable then), not before.
+2. **A plain in-memory cache (`ConcurrentHashMap`/Caffeine) instead of Firestore.** Considered —
+   genuinely simpler, and would still solve "don't refetch per user." Rejected in favor of
+   Firestore specifically because this app already restarts often during local dev (Spring Boot
+   DevTools auto-restarts on every recompile), which would evict an in-memory cache constantly and
+   defeat a large fraction of its purpose; Firestore survives restarts and costs nothing new
+   (ADC's already set up, zero additional dependencies).
+3. **Sequential FMP calls instead of parallel.** Considered as the simpler option, since this only
+   matters on a cache miss and even 4 sequential calls at ~300-500ms each adds maybe 1-2s to a
+   turn that's already 7-10s dominated by two Gemini calls. Went with parallel anyway since
+   `HttpClient.sendAsync` made it no more complex than sequential code would have been — not a
+   case of complexity traded for a marginal win.
+4. **Blanket try/catch around the whole FMP fetch, log and return `found: false` on any failure.**
+   Rejected in favor of the two-tier approach above — a blanket catch would mean one flaky
+   endpoint (say, `analyst-estimates` timing out) throws away the 3 calls that *did* succeed, and
+   would swallow real bugs that the audit trail is specifically built to catch.
 
 ## BigQuery audit log
 
@@ -468,10 +579,12 @@ limits as tool/agent count grows, not just at today's scale.
 | `GCP_PROJECT_ID`           | GCP project for the Firestore *and* BigQuery clients (`gcp.project-id` property) |
 | `DEMO_USER_USERNAME`/`DEMO_USER_PASSWORD` | overrides the seeded demo login (defaults `demo`/`changeme`) |
 | `FIRESTORE_EMULATOR_HOST`  | if set, Firestore client auto-detects it and uses the local emulator instead of real GCP (no code involved — the client library checks this env var itself) |
+| `FMP_API_KEY`               | Financial Modeling Prep key for `MarketDataService` (`fmp.api-key` property) — free tier, no credit card, get one at financialmodelingprep.com. **The one non-ADC credential in this app** — see [Real market data](#real-market-data) for why (a third-party API, not a GCP service). If unset, stock lookups degrade to `found: false` instead of failing the chat turn. |
 
 No `GOOGLE_API_KEY`/`GEMINI_API_KEY` is used — this project deliberately uses ADC via Vertex AI
 instead (one credential covers Gemini, Firestore, and now BigQuery too, and it's what Cloud Run will use
-automatically later via its attached service account).
+automatically later via its attached service account). `FMP_API_KEY` is the sole exception, since
+Financial Modeling Prep is a third-party SaaS API, not a GCP service — ADC has no meaning there.
 
 ## Gotchas discovered the hard way
 

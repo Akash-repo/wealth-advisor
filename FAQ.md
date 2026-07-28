@@ -24,6 +24,7 @@ export GOOGLE_GENAI_USE_VERTEXAI=true
 export GOOGLE_CLOUD_PROJECT=agentic-ai-503223
 export GOOGLE_CLOUD_LOCATION=us-central1
 export GCP_PROJECT_ID=agentic-ai-503223
+export FMP_API_KEY=your-free-financial-modeling-prep-key
 mvn spring-boot:run
 ```
 
@@ -32,7 +33,10 @@ is exactly what gets exercised via `curl` when testing changes from the CLI — 
 gives you the same thing visually.
 
 (No `GOOGLE_API_KEY`/`GEMINI_API_KEY` needed or wanted here — this project deliberately uses ADC
-via Vertex AI instead; see ARCHITECTURE.md's [Environment variables](ARCHITECTURE.md#environment-variables) section.)
+via Vertex AI instead; see ARCHITECTURE.md's [Environment variables](ARCHITECTURE.md#environment-variables) section.
+`FMP_API_KEY` is the one exception — it's a third-party API key, not a GCP credential, so ADC
+doesn't cover it. The app still starts fine without it; stock lookups just return `found: false`
+instead of real data, see [Real market data](ARCHITECTURE.md#real-market-data).)
 
 ## How does the DB search actually work — for user auth vs. for vector search? What's the filter?
 

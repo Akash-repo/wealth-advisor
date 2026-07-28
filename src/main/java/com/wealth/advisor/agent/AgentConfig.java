@@ -38,6 +38,7 @@ public class AgentConfig {
 	@Bean
 	public LlmAgent portfolioAnalysisAgent(
 			PortfolioSearchTool portfolioSearchTool,
+			StockLookupTool stockLookupTool,
 			AgentAuditRecorder agentAuditRecorder,
 			ToolUsageRecorder toolUsageRecorder) {
 		return LlmAgent.builder()
@@ -53,12 +54,15 @@ public class AgentConfig {
 						if it comes back with found=false, no portfolio has been uploaded yet, so say that
 						plainly instead of inventing numbers.
 
-						If the user mentions a specific stock, use the getStockPrice tool to look up its
-						current price. Write 2-3 sentences summarizing what you found for a colleague who
-						will write the final recommendation; don't address the user directly yet.
+						If the user mentions a specific stock, use the getStockData tool to look up its
+						current price and fundamentals (P/E, PEG, forward P/E, EPS growth, free cash flow
+						per share) — data may be up to a day stale, which is fine to mention if relevant but
+						not something to caveat every time. Write 2-3 sentences summarizing what you found
+						for a colleague who will write the final recommendation; don't address the user
+						directly yet.
 						""")
 				.tools(
-						FunctionTool.create(StockLookupTool.class, "getStockPrice"),
+						FunctionTool.create(stockLookupTool, "getStockData"),
 						FunctionTool.create(portfolioSearchTool, "searchPortfolio"))
 				.outputKey("portfolio_analysis")
 				// Every real call to Gemini this agent makes gets recorded to BigQuery — see
@@ -66,7 +70,7 @@ public class AgentConfig {
 				.beforeModelCallbackSync(agentAuditRecorder::beforeModel)
 				.afterModelCallbackSync(agentAuditRecorder::afterModel)
 				// Same idea, one level down: every real tool call this agent makes (searchPortfolio,
-				// getStockPrice) gets recorded to BigQuery too — see ToolUsageRecorder's javadoc.
+				// getStockData) gets recorded to BigQuery too — see ToolUsageRecorder's javadoc.
 				.beforeToolCallbackSync(toolUsageRecorder::beforeTool)
 				.afterToolCallbackSync(toolUsageRecorder::afterTool)
 				.onToolErrorCallbackSync(toolUsageRecorder::onToolError)
