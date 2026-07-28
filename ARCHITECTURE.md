@@ -17,6 +17,7 @@ file grows as new questions come up.
 - [Architecture diagram](#architecture-diagram)
 - [End-to-end request flows](#end-to-end-request-flows)
 - [Firestore schema](#firestore-schema)
+- [Portfolio holdings](#portfolio-holdings)
 - [Real market data](#real-market-data)
 - [BigQuery audit log](#bigquery-audit-log)
 - [Environment variables](#environment-variables)
@@ -176,10 +177,12 @@ vector distances are meaningless.
 | ChatController -> AgentChatService -> Runner          |
 |   -> SequentialAgent (wealthAdvisorPipeline)          |
 |        portfolio_analysis -> stock_recommendation     |
-|        tools: getStockData, searchPortfolio (RAG)     |
+|        tools: getStockData, searchPortfolio,          |
+|               getPortfolioHoldings (RAG)               |
 |                                                       |
 | PortfolioController -> PortfolioIngestionService      |
-|   (PDFBox parse -> TextChunker -> EmbeddingService)   |
+|   (PDFBox parse -> TextChunker -> EmbeddingService    |
+|    -> HoldingsExtractionService)                      |
 |                                                       |
 | AgentAuditRecorder + ToolUsageRecorder (before/after  |
 |   model + tool callbacks, wired in AgentConfig)       |
@@ -189,9 +192,12 @@ vector distances are meaningless.
           v                                     v                          v
    Firestore                           BigQuery: wealth_agent      Financial Modeling Prep
    users, portfolio_vectors,           .agent_audit_log            (getStockData's real
-   market_data_cache, adk-session/*    .tool_invocations            price/fundamentals —
-   (auth, RAG chunks, 24h stock        .tool_registry                the one non-ADC
-    cache, ADK session history)        (1 row/turn, 1 row/tool call) credential, FMP_API_KEY)
+   portfolio_holdings,                 .tool_invocations            price/fundamentals —
+   portfolio_documents,                .tool_registry                the one non-ADC
+   market_data_cache, adk-session/*    (1 row/turn, 1 row/tool call) credential, FMP_API_KEY)
+   (auth, RAG chunks, exact
+    holdings, upload metadata,
+    24h stock cache, ADK sessions)
                             |
                             v
           Gemini 2.5 Flash + text-embedding-004
@@ -226,14 +232,26 @@ per-message.)*
 4. On success, Spring Security issues an `HttpOnly`, `SameSite=Lax` `JSESSIONID` cookie and
    redirects to `index.html`.
 
-### 2. Portfolio upload (RAG ingestion)
+### 2. Document upload (RAG ingestion + holdings extraction)
 
-1. Authenticated `POST /api/portfolio/upload` (multipart) hits `PortfolioController`.
+Upload is optional (chat works without it — `searchPortfolio`/`getPortfolioHoldings` just report
+`found: false`), and a user can upload any number of documents of any type — brokerage statements
+from multiple accounts, a resume, a bank statement. See [Portfolio holdings](#portfolio-holdings)
+for the full design.
+
+1. Authenticated `POST /api/portfolio/upload` (multipart, `file` + `documentType`) hits
+   `PortfolioController`, once per file — the frontend loops over however many files were selected.
 2. `PortfolioIngestionService.ingest`:
    - Extracts text from the PDF (PDFBox's `Loader.loadPDF` + `PDFTextStripper`).
-   - Splits it into ~250-word chunks (`TextChunker`).
-   - Embeds each chunk (`EmbeddingService`, Gemini `text-embedding-004`, 768 dimensions).
-   - Writes each chunk + its vector to Firestore's `portfolio_vectors` collection.
+   - Splits it into ~250-word chunks (`TextChunker`), embeds each (`EmbeddingService`, Gemini
+     `text-embedding-004`), writes them to `portfolio_vectors` — unchanged from before, and
+     **additive**: a new upload never deletes a prior one's chunks, so multiple brokerage
+     statements coexist and all contribute to RAG search.
+   - Runs `HoldingsExtractionService` over the same extracted text to pull out structured holdings
+     (ticker, shares, cost basis, account), written to `portfolio_holdings` — a resume or bank
+     statement just yields zero holdings, not an error.
+   - Writes one `portfolio_documents` metadata record for this upload (so it can be listed/deleted
+     as a unit — see `DELETE /api/portfolio/documents/{filename}`).
    - Sets `users/{userId}.hasUploadedPortfolio = true`.
 
 ### 3. Chat (the two-agent RAG pipeline)
@@ -289,6 +307,38 @@ per-message.)*
 **Requires a composite index** (equality filter on `userId` + vector index on `embedding`) — see
 [Gotchas](#gotchas-discovered-the-hard-way).
 
+### `portfolio_holdings` — exact per-account holdings (this app's own collection)
+
+| Field       | Type      | Notes                                                          |
+|-------------|-----------|-------------------------------------------------------------------|
+| *(doc id)*  | auto-generated |                                                                |
+| `userId`    | string    | indexed — pre-filter, same isolation pattern as `portfolio_vectors` |
+| `filename`  | string    | which uploaded document this holding was extracted from            |
+| `ticker`    | string    | uppercased                                                          |
+| `shares`    | number    |                                                                      |
+| `costBasis` | number    | nullable — per-share, if the document stated one                   |
+| `account`   | string    | nullable — brokerage/account name, if the document stated one      |
+| `extractedAt` | timestamp |                                                                  |
+
+One document per holding-per-account — a user with GOOG in 3 brokerage accounts has 3 separate
+docs here, summed in Java by `PortfolioHoldingsTool`, not derived from prose chunks. See
+[Portfolio holdings](#portfolio-holdings).
+
+### `portfolio_documents` — one record per upload (this app's own collection)
+
+| Field           | Type      | Notes                                                       |
+|------------------|-----------|-----------------------------------------------------------------|
+| *(doc id)*        | auto-generated |                                                              |
+| `userId`           | string    | indexed                                                          |
+| `filename`          | string    |                                                                   |
+| `documentType`       | string    | `brokerage` / `resume` / `bank_statement` / `other` — metadata only, doesn't change how it's processed |
+| `chunkCount`          | number    |                                                                   |
+| `holdingsCount`         | number    |                                                                   |
+| `uploadedAt`             | timestamp |                                                                   |
+
+Exists so a user's uploads can be listed and deleted as a unit (`GET`/`DELETE
+/api/portfolio/documents/...`) without deriving that list from scattered chunk/holding rows.
+
 ### `market_data_cache` — real stock data, cached across all users (this app's own collection)
 
 | Field                  | Type      | Notes                                                    |
@@ -332,6 +382,72 @@ user-state (collection)
 
 We don't write to any of this directly — it's entirely managed by
 `com.google.adk.sessions.FirestoreSessionService`, constructed once in `AgentChatService`.
+
+## Portfolio holdings
+
+Originally a user could upload exactly one portfolio PDF. Now uploads are optional, a user can
+upload any number of documents of any kind (multiple brokerage statements — Vanguard, Fidelity,
+Robinhood, ... — plus non-brokerage documents like a resume or bank statement for extra context),
+and each can be deleted individually. See `PortfolioController`'s `GET`/`DELETE
+/api/portfolio/documents/...` and the multi-file upload UI in `index.html`.
+
+**The problem this solves — RAG chunk retrieval alone can't answer aggregation questions
+reliably.** `searchPortfolio`'s vector search returns the top 3 chunks most semantically similar
+to the question — fine for qualitative questions ("what are my risk notes"), but structurally
+wrong for a question like "how much GOOG do I hold across all my accounts": if GOOG appears in a
+Vanguard chunk, a Fidelity chunk, and a Robinhood chunk, there is no guarantee all three make it
+into a fixed top-3 retrieval, and the model would then confidently sum whatever partial subset it
+happened to see — a wrong number stated with full confidence, which is worse than no number at
+all for a financial-advice app. Increasing K reduces the odds but doesn't fix the structural
+issue: vector similarity search has no notion of "return every chunk that mentions X," only "the
+K closest matches," and completeness isn't something a bigger K guarantees as accounts grow.
+
+**The fix: extract structured facts once at upload time, aggregate them exactly at query time.**
+`HoldingsExtractionService` calls Gemini once per uploaded document with a JSON `responseSchema`
+(not free-form text) to pull out every holding as `{ticker, shares, costBasis, account}` —
+structured fields, not prose. These are stored in `portfolio_holdings`, one document per
+holding-per-account. `PortfolioHoldingsTool.getPortfolioHoldings` then answers aggregation
+questions with a **real, exhaustive Firestore query** (`whereEqualTo("userId", ...)`, optionally
+`whereEqualTo("ticker", ...)`) summed in plain Java — not an LLM adding up numbers it happened to
+retrieve. This is the standard split for RAG-adjacent systems: chunk-and-embed for qualitative,
+fuzzy-match retrieval; structured-extract-and-query for anything that needs an exact, complete
+number. `searchPortfolio` didn't change and still exists for the qualitative case — this is a
+second, complementary tool, not a replacement.
+
+**Two tools, two very different reliability guarantees, and the agent's instruction says so
+explicitly** (`AgentConfig`): `searchPortfolio` for narrative context, `getPortfolioHoldings` for
+"how much of X do I hold" or "what are all my holdings" — the model is told directly not to use
+`searchPortfolio` for the latter, since that's exactly the failure mode this was built to avoid.
+
+**Verified live**, not just in theory: three synthetic brokerage statements (Vanguard 40 GOOG,
+Fidelity 25 GOOG, Robinhood 15 GOOG, each at a different cost basis) were uploaded, and
+`getPortfolioHoldings("GOOG")` returned exactly 80 shares with a weighted-average cost basis of
+$106.25 — matching the hand-computed value exactly. Deleting the Robinhood document correctly
+dropped the total to 65 shares and recalculated the weighted average, confirming the delete
+cascade actually removes `portfolio_holdings` rows, not just the metadata record.
+
+**Options considered and rejected:**
+
+1. **Just retrieve more chunks (raise `MAX_RESULTS`) instead of adding structured extraction.**
+   Rejected — reduces the odds of missing a relevant chunk but doesn't guarantee completeness, and
+   doesn't scale: a user with 10 accounts needs all 10 represented, not "probably most of them."
+2. **Ask the LLM to do the arithmetic over retrieved chunks, more carefully (better prompting).**
+   Rejected — the ceiling on this approach is retrieval completeness, not prompt quality; no
+   amount of prompt engineering fixes "the relevant chunk was never retrieved in the first place."
+3. **Structured extraction with regex/heuristic parsing instead of an LLM call.** Considered, since
+   it would avoid a second Gemini call per upload — rejected because brokerage statement formats
+   vary enough between providers (Vanguard vs. Merrill vs. Fidelity vs. Robinhood) that a
+   general-purpose LLM extraction call is far more robust than hand-written per-provider parsers,
+   and this is a one-time cost at upload, not something that runs per chat message.
+4. **Skip the `portfolio_documents` metadata collection; derive a document list from
+   `portfolio_vectors`/`portfolio_holdings` directly.** Rejected — Firestore doesn't cheaply do
+   "distinct filenames for this user," and deriving delete targets from scattered chunk rows is
+   both slower and more error-prone than one purpose-built metadata record per upload.
+5. **Auto-detect `documentType` from content instead of asking the user to pick one at upload.**
+   Rejected for now — `documentType` is currently metadata-only (doesn't change how a document is
+   processed; every type goes through the same chunk+embed+extract pipeline), so auto-detection
+   would add a real LLM call for a value that isn't yet load-bearing anywhere. Worth revisiting if
+   `documentType` ever starts influencing retrieval behavior.
 
 ## Real market data
 
@@ -640,7 +756,8 @@ These aren't documented anywhere obvious — found by actually running the app, 
 1. ✅ Single agent + one tool + `/api/chat`, in-memory sessions.
 2. ✅ Spring Security login backed by Firestore, per-user session isolation.
 3. ✅ Two-agent `SequentialAgent` pipeline (`portfolio_analysis` → `stock_recommendation`).
-4. ✅ PDF upload → RAG (chunk/embed/store/search) + Firestore-backed ADK sessions.
+4. ✅ PDF upload → RAG (chunk/embed/store/search) + Firestore-backed ADK sessions. (Later
+   extended to optional, multi-file, multi-type uploads — see milestone 8.)
 5. ✅ Self-service signup (`signup.html` → `POST /api/auth/register` → `UserRegistrationService`),
    so accounts aren't limited to the one seeded demo user.
 6. ✅ BigQuery audit trail of every Gemini call and every tool call (`AgentAuditRecorder` +
@@ -655,4 +772,12 @@ These aren't documented anywhere obvious — found by actually running the app, 
    24h Firestore cache shared across every user. The one non-ADC credential in this app
    (`FMP_API_KEY`); log-forging guardrails (`com.wealth.advisor.guardrails.ContentSanitizer`)
    added alongside it.
-8. ⏳ Cloud Run deployment — not started.
+8. ✅ Optional, multi-file, multi-type portfolio uploads + exact holdings aggregation (see
+   [Portfolio holdings](#portfolio-holdings)) — upload is no longer required or limited to one
+   file; any number of brokerage statements, resumes, or bank statements can be uploaded and
+   individually deleted. `HoldingsExtractionService` + `portfolio_holdings` +
+   `PortfolioHoldingsTool.getPortfolioHoldings` solve exact cross-account aggregation (e.g. total
+   GOOG shares across 3 brokerages) in a way chunk-based RAG retrieval structurally can't
+   guarantee. Per-user isolation is unchanged — every new collection/query still scopes by
+   `userId` the same way `portfolio_vectors` always has.
+9. ⏳ Cloud Run deployment — not started.

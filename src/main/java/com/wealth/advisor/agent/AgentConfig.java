@@ -3,6 +3,7 @@ package com.wealth.advisor.agent;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.tools.FunctionTool;
+import com.wealth.advisor.agent.tool.PortfolioHoldingsTool;
 import com.wealth.advisor.agent.tool.PortfolioSearchTool;
 import com.wealth.advisor.agent.tool.StockLookupTool;
 import com.wealth.advisor.audit.AgentAuditRecorder;
@@ -38,6 +39,7 @@ public class AgentConfig {
 	@Bean
 	public LlmAgent portfolioAnalysisAgent(
 			PortfolioSearchTool portfolioSearchTool,
+			PortfolioHoldingsTool portfolioHoldingsTool,
 			StockLookupTool stockLookupTool,
 			AgentAuditRecorder agentAuditRecorder,
 			ToolUsageRecorder toolUsageRecorder) {
@@ -49,28 +51,35 @@ public class AgentConfig {
 				.model("gemini-2.5-flash")
 				.instruction(
 						"""
-						You are a portfolio analyst. Use the searchPortfolio tool to look up the user's
-						actual holdings, allocation, or cost basis whenever the question depends on them —
-						if it comes back with found=false, no portfolio has been uploaded yet, so say that
-						plainly instead of inventing numbers.
+						You are a portfolio analyst. Use these tools as needed:
 
-						If the user mentions a specific stock, use the getStockData tool to look up its
-						current price and fundamentals (P/E, PEG, forward P/E, EPS growth, free cash flow
-						per share) — data may be up to a day stale, which is fine to mention if relevant but
-						not something to caveat every time. Write 2-3 sentences summarizing what you found
-						for a colleague who will write the final recommendation; don't address the user
-						directly yet.
+						- searchPortfolio — qualitative context from the user's uploaded documents (risk
+						  notes, sector allocation commentary, cost-basis narrative). If it comes back with
+						  found=false, no portfolio has been uploaded yet, so say that plainly instead of
+						  inventing numbers.
+						- getPortfolioHoldings — the exact number of shares of a ticker the user holds,
+						  summed across every brokerage account they've uploaded a statement for. Always
+						  use this (not searchPortfolio) for "how much of X do I hold" or "what are all my
+						  holdings" — searchPortfolio can miss holdings split across multiple documents.
+						- getStockData — current price and fundamentals (P/E, PEG, forward P/E, EPS growth,
+						  free cash flow per share) for a stock the user mentions. Data may be up to a day
+						  stale, which is fine to mention if relevant but not something to caveat every time.
+
+						Write 2-3 sentences summarizing what you found for a colleague who will write the
+						final recommendation; don't address the user directly yet.
 						""")
 				.tools(
 						FunctionTool.create(stockLookupTool, "getStockData"),
-						FunctionTool.create(portfolioSearchTool, "searchPortfolio"))
+						FunctionTool.create(portfolioSearchTool, "searchPortfolio"),
+						FunctionTool.create(portfolioHoldingsTool, "getPortfolioHoldings"))
 				.outputKey("portfolio_analysis")
 				// Every real call to Gemini this agent makes gets recorded to BigQuery — see
 				// AgentAuditRecorder's javadoc for how a whole turn gets correlated across agents.
 				.beforeModelCallbackSync(agentAuditRecorder::beforeModel)
 				.afterModelCallbackSync(agentAuditRecorder::afterModel)
 				// Same idea, one level down: every real tool call this agent makes (searchPortfolio,
-				// getStockData) gets recorded to BigQuery too — see ToolUsageRecorder's javadoc.
+				// getStockData, getPortfolioHoldings) gets recorded to BigQuery too — see
+				// ToolUsageRecorder's javadoc.
 				.beforeToolCallbackSync(toolUsageRecorder::beforeTool)
 				.afterToolCallbackSync(toolUsageRecorder::afterTool)
 				.onToolErrorCallbackSync(toolUsageRecorder::onToolError)
