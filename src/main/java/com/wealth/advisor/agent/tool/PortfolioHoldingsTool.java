@@ -24,6 +24,15 @@ import org.springframework.stereotype.Component;
  * exhaustive Firestore query summed in plain Java — not an LLM adding up numbers it happened to
  * retrieve.
  *
+ * <p><strong>Gotcha:</strong> {@code ticker} must be marked {@code @Schema(..., optional = true)}
+ * — {@code Annotations.Schema} defaults {@code optional()} to {@code false}, and when a parameter
+ * isn't marked optional, ADK validates the model's function-call arguments against the declared
+ * schema *before* invoking this method at all. A turn where the model correctly omits {@code
+ * ticker} (asking for every holding) would then throw inside ADK's own binding layer — this
+ * method's own {@code log.debug} never even fires — surfacing to the user as a generic "internal
+ * error" with no indication of the real cause. Found live: asking "analyze my holdings" (no
+ * ticker in mind) reliably failed this way until {@code optional = true} was added.
+ *
  * <p>Reads {@code portfolio_holdings}, written by {@link
  * com.wealth.advisor.portfolio.HoldingsExtractionService} at upload time — one document per
  * holding-per-account, never derived from chunk text at query time.
@@ -48,7 +57,8 @@ public class PortfolioHoldingsTool {
 	public Map<String, Object> getPortfolioHoldings(
 			@Schema(
 							name = "ticker",
-							description = "Stock ticker to look up, e.g. GOOG. Leave blank to get every holding.")
+							description = "Stock ticker to look up, e.g. GOOG. Leave blank to get every holding.",
+							optional = true)
 					String ticker,
 			ToolContext toolContext) {
 		String userId = toolContext.userId();
