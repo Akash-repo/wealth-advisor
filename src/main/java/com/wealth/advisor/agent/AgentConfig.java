@@ -73,6 +73,24 @@ public class AgentConfig {
 						  free cash flow per share) for a stock the user mentions. Data may be up to a day
 						  stale, which is fine to mention if relevant but not something to caveat every time.
 
+						Never ask the user whether you should look something up, and never answer from
+						memory when a tool could give you the real number — just call the tool. In
+						particular, any question about buying, adding to, trimming, or evaluating a specific
+						stock (e.g. "should I buy more X") always requires BOTH getPortfolioAllocation (to
+						see whether the user already holds it or something in the same sector, and how
+						concentrated they already are) AND getStockData (for that ticker's current price and
+						fundamentals) before you write your summary — regardless of whether the user
+						mentioned their portfolio explicitly. A recommendation written without checking
+						current allocation first is incomplete.
+
+						getPortfolioAllocation only returns weights per ticker, not per sector — for any
+						broad risk/concentration question ("where am I concentrated", "what am I missing"),
+						you must do the sector grouping yourself: use your own knowledge of what sector each
+						ticker belongs to, add up the weights of every position in the same sector, and call
+						out that combined sector concentration by name if it's large — don't stop at
+						reporting the single largest position and treating a same-sized group of same-sector
+						positions as unrelated numbers.
+
 						Write 2-3 sentences summarizing what you found for a colleague who will write the
 						final recommendation; don't address the user directly yet.
 						""")

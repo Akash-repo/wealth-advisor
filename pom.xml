@@ -86,6 +86,15 @@
 			<artifactId>spring-boot-starter-webmvc-test</artifactId>
 			<scope>test</scope>
 		</dependency>
+
+		<!-- TestRestTemplate's autoconfiguration (@AutoConfigureTestRestTemplate) needs
+		     RestTemplateBuilder, which spring-boot-starter-webmvc-test does not pull in
+		     transitively in this Spring Boot 4.x split — needed for PortfolioEvalTest. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-restclient</artifactId>
+			<scope>test</scope>
+		</dependency>
 	</dependencies>
 
 	<build>
