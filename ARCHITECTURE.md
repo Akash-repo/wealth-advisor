@@ -22,6 +22,7 @@ file grows as new questions come up.
 - [BigQuery audit log](#bigquery-audit-log)
 - [Evals](#evals)
 - [Environment variables](#environment-variables)
+- [GCP deployment (Cloud Run)](#gcp-deployment-cloud-run)
 - [Gotchas discovered the hard way](#gotchas-discovered-the-hard-way)
 - [Milestone status](#milestone-status)
 
@@ -859,6 +860,164 @@ instead (one credential covers Gemini, Firestore, and now BigQuery too, and it's
 automatically later via its attached service account). `FMP_API_KEY` is the sole exception, since
 Financial Modeling Prep is a third-party SaaS API, not a GCP service — ADC has no meaning there.
 
+## GCP deployment (Cloud Run)
+
+A runbook, not a retrospective — nothing in this section has been executed yet (milestone 11 below
+is still ⏳). Written so the deployment can actually be followed step by step when it happens,
+rather than reconstructed from memory. Update this section with what actually happened/what broke
+once it's done live, the same way every other section in this doc was written after the fact.
+
+**Why Cloud Run Service** (not Jobs, not GKE): this app is a plain request/response HTTP service
+with no background/batch work, so Jobs doesn't fit. GKE would mean managing a cluster for a single
+service — pure overhead here. Cloud Run Service scales to zero, needs no cluster ops, and — the
+detail that actually matters for this app specifically — its metadata-server ADC is exactly what
+`GenAiClientConfig`/`FirestoreConfig`/the BigQuery config bean already expect with zero code
+changes; see FAQ.md's ["Where's our ADC in this project?"](FAQ.md#wheres-our-adc-in-this-project-how-does-it-differ-between-local-and-cloud-run)
+for the local-vs-Cloud-Run ADC comparison this whole deployment rides on.
+
+### 1. One-time GCP project setup
+
+Assuming deployment targets the same project already used for local dev (`agentic-ai-503223`) —
+Firestore (Native mode) and the vector composite index (Gotcha #1 below) already exist there from
+local development, so nothing to do for those. For a *different* project, do both first.
+
+Enable the APIs a fresh project wouldn't have on by default:
+
+```bash
+gcloud services enable run.googleapis.com aiplatform.googleapis.com \
+  firestore.googleapis.com bigquery.googleapis.com \
+  cloudbuild.googleapis.com artifactregistry.googleapis.com \
+  secretmanager.googleapis.com --project=<PROJECT_ID>
+```
+
+BigQuery's `agent_audit_log`/`tool_invocations`/`tool_registry` dataset and tables are **not**
+created manually — `AuditSchemaInitializer`/`ToolUsageSchemaInitializer` create them on first
+successful app startup, same as local dev. The runtime service account just needs the IAM to do
+that (next section) — don't pre-create the dataset by hand, it'll just be redundant with what the
+app already does idempotently.
+
+### 2. Runtime service account & IAM roles
+
+Cloud Run's attached service account is what ADC resolves to in production (no key file — see the
+FAQ.md table linked above). Create one dedicated to this app rather than using the project's
+default compute service account:
+
+```bash
+gcloud iam service-accounts create wealth-advisor-run \
+  --display-name="Wealth Advisor Cloud Run runtime identity" --project=<PROJECT_ID>
+```
+
+| Role | Why |
+|---|---|
+| `roles/datastore.user` | Firestore reads/writes — `users`, `portfolio_vectors`, `portfolio_holdings`, `portfolio_documents`, `market_data_cache`, and ADK's own `adk-session` collection. |
+| `roles/aiplatform.user` | Gemini calls via Vertex AI (`GOOGLE_GENAI_USE_VERTEXAI=true`) — both agents' LLM calls and `HoldingsExtractionService`/`JudgeService`'s structured-output calls. |
+| `roles/bigquery.dataEditor` **at the project level** (not scoped to one dataset — the dataset doesn't exist yet on first deploy) | Insert/query rows, and — per Google's IAM docs, this role grants dataset creation specifically when bound at project scope — lets `AuditSchemaInitializer` create `agent_audit_log`'s dataset on first startup. |
+| `roles/bigquery.jobUser` | Separate from `dataEditor` — needed to actually run query jobs (`PortfolioEvalTest`-style polling queries, BigQuery client `bigQuery.query(...)` calls), which `dataEditor` alone doesn't grant. |
+| `roles/secretmanager.secretAccessor` | Only if `FMP_API_KEY` is stored in Secret Manager (recommended below) rather than a plain `--set-env-vars` value. |
+
+If a permission error shows up on first deploy that isn't obviously one of the above, `roles/bigquery.admin` is the blunt fallback for BigQuery specifically (over-permissioned but fine to unblock a first deploy of a learning project, then tighten back down) — not a substitute for figuring out which specific permission was actually missing.
+
+```bash
+for role in roles/datastore.user roles/aiplatform.user roles/bigquery.dataEditor roles/bigquery.jobUser roles/secretmanager.secretAccessor; do
+  gcloud projects add-iam-policy-binding <PROJECT_ID> \
+    --member="serviceAccount:wealth-advisor-run@<PROJECT_ID>.iam.gserviceaccount.com" \
+    --role="$role"
+done
+```
+
+### 3. `FMP_API_KEY` via Secret Manager
+
+Per [Environment variables](#environment-variables), this is the one non-ADC credential in the
+app — worth keeping out of plain `--set-env-vars` (which shows up in `gcloud run services
+describe` output and revision metadata) the way the GCP-native credentials never have to be:
+
+```bash
+printf '%s' "$FMP_API_KEY" | gcloud secrets create fmp-api-key --data-file=- --project=<PROJECT_ID>
+```
+
+(the IAM binding for `secretmanager.secretAccessor` above already covers the runtime service
+account reading it; `--set-secrets` in the deploy command below wires it to the `FMP_API_KEY` env
+var the app already reads.)
+
+### 4. Code prerequisite not yet in place
+
+`application.properties` has no `server.port` entry, so the app always listens on **8080**
+regardless of environment. Locally that's fine — it's also Spring Boot's own default. Cloud Run
+injects a `PORT` env var (usually 8080, but not guaranteed) and healthchecks whatever port that
+is, so before the first deploy, add:
+
+```properties
+server.port=${PORT:8080}
+```
+
+Harmless for local dev (`PORT` is never set there, so it falls back to the same 8080 as today) —
+purely additive, not yet done since nothing has required it until now.
+
+### 5. Deploy
+
+No `Dockerfile` — `--source .` uses Google Cloud Buildpacks (via Cloud Build), which auto-detects
+this is a Maven project from `pom.xml` and builds a runnable container without one, the same
+"don't add tooling this project doesn't need yet" call already made for the UI (Bootstrap via CDN,
+no bundler).
+
+```bash
+gcloud run deploy wealth-advisor \
+  --source . \
+  --project=<PROJECT_ID> \
+  --region=us-central1 \
+  --service-account=wealth-advisor-run@<PROJECT_ID>.iam.gserviceaccount.com \
+  --allow-unauthenticated \
+  --set-env-vars=GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=<PROJECT_ID>,GOOGLE_CLOUD_LOCATION=us-central1,GCP_PROJECT_ID=<PROJECT_ID> \
+  --set-secrets=FMP_API_KEY=fmp-api-key:latest \
+  --memory=1Gi \
+  --cpu=1
+```
+
+**`--allow-unauthenticated` is not optional here, and is a different layer than this app's own
+login.** Cloud Run has its own IAM-based access control that sits in front of the container
+entirely — without this flag, Cloud Run rejects anonymous requests before they ever reach Spring
+Security, so nobody could even load `/login.html`. This app's real authentication is
+`SecurityConfig`'s form login (see [End-to-end request flows](#end-to-end-request-flows)) — Cloud
+Run's own layer should stay open so that logic is the only gate a user actually hits.
+
+`us-central1` matches `GOOGLE_CLOUD_LOCATION` deliberately — keeps Cloud Run and the Vertex AI
+calls it makes in the same region, not required but avoids unnecessary cross-region latency.
+
+Consider also setting `DEMO_USER_USERNAME`/`DEMO_USER_PASSWORD` (via `--set-env-vars` or another
+secret) rather than leaving the seeded account at its `demo`/`changeme` default once this is
+reachable on the public internet — self-service signup exists as the real path in, but the seeded
+account still exists too.
+
+### 6. Post-deploy verification
+
+Don't consider this done until each of these has actually been checked, not assumed:
+
+1. Visiting the Cloud Run URL redirects to `/login.html` (unauthenticated root is correctly gated).
+2. Log in (demo user or a fresh signup), confirm `/index.html` loads with the new Bootstrap UI and
+   its `/css/**`/`/js/**` assets actually load (these are the paths added to `SecurityConfig`'s
+   `permitAll` — worth specifically confirming they don't 302-redirect instead of serving).
+3. Upload a real PDF, confirm it shows up via `GET /api/portfolio/documents`.
+4. Send a chat message, confirm a real reply (not a generic error).
+5. Query BigQuery for a row in `agent_audit_log`/`tool_invocations` from that turn — confirms the
+   `bigquery.dataEditor`/`bigquery.jobUser` IAM actually worked end to end, not just that the app
+   started without throwing.
+6. Check the Firestore console for the new documents/vectors/holdings — confirms
+   `datastore.user` end to end the same way.
+
+### 7. Redeploys
+
+Re-running the same `gcloud run deploy --source .` command creates a new revision and Cloud Run
+shifts 100% of traffic to it automatically (no manual traffic-split step needed for a project at
+this stage).
+
+### Cost/scaling notes (a tradeoff to decide at deploy time, not a recommendation)
+
+Default `min-instances=0` scales to zero between requests — cheapest, but the first request after
+idle pays a cold start (JVM start + Spring context init + ADK/Firestore/BigQuery client setup,
+likely several seconds, not measured yet). `min-instances=1` removes that at the cost of one
+always-on instance. Fine to start at the scale-to-zero default and revisit only if cold starts turn
+out to matter for how this gets used.
+
 ## Gotchas discovered the hard way
 
 These aren't documented anywhere obvious — found by actually running the app, not by reading docs:
@@ -959,4 +1118,6 @@ These aren't documented anywhere obvious — found by actually running the app, 
     trim/add check. Found and fixed two real agent-behavior gaps (asking permission instead of
     calling a tool; not grouping same-sector positions) before this suite existed to catch them.
     Verified stable across two independent live runs.
-11. ⏳ Cloud Run deployment — not started.
+11. ⏳ Cloud Run deployment — not started. Runbook written in [GCP deployment (Cloud
+    Run)](#gcp-deployment-cloud-run) ahead of actually doing it, including one still-outstanding
+    code prerequisite (`server.port`) called out there.
