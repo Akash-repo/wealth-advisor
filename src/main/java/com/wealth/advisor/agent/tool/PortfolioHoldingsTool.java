@@ -93,7 +93,12 @@ public class PortfolioHoldingsTool {
 		return singleTicker ? summaries.get(0) : Map.of("holdings", summaries, "found", true);
 	}
 
-	private static Map<String, Object> summarize(String ticker, List<QueryDocumentSnapshot> docs) {
+	/**
+	 * Package-private, not private: {@link PortfolioAllocationTool} shares this exact "group by
+	 * ticker, sum shares, weighted-average cost basis" logic rather than duplicating it — it just
+	 * layers current price/value/weight on top of the same summary this tool returns on its own.
+	 */
+	static Map<String, Object> summarize(String ticker, List<QueryDocumentSnapshot> docs) {
 		Map<String, Double> byAccount = new LinkedHashMap<>();
 		double totalShares = 0;
 		double costBasisWeightedSum = 0;

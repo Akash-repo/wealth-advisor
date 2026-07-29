@@ -449,6 +449,57 @@ cascade actually removes `portfolio_holdings` rows, not just the metadata record
    would add a real LLM call for a value that isn't yet load-bearing anywhere. Worth revisiting if
    `documentType` ever starts influencing retrieval behavior.
 
+### Portfolio allocation (value + weight, not just share count)
+
+Share count alone can't answer risk/concentration questions — "80 shares of GOOG" means nothing
+without knowing what that's *worth* and what fraction of the whole portfolio it represents. This
+surfaced directly while designing an eval case for `getPortfolioHoldings`: trying to write down
+"the correct answer" for "am I overexposed to GOOG" forced the realization that share count isn't
+the right unit for that question at all — value and weight are, and the existing tool doesn't
+compute either.
+
+`PortfolioAllocationTool.getPortfolioAllocation` (optional `topN` param) closes this gap:
+
+1. Groups `portfolio_holdings` by ticker — reusing `PortfolioHoldingsTool.summarize` (package-
+   private, shared rather than duplicated) for the share-count/cost-basis part of each position.
+2. Fetches current price **per distinct ticker** (not per holding-per-account row) via
+   `MarketDataService` — in parallel via `CompletableFuture`, the same "many independent lookups,
+   combine results" shape `MarketDataService` itself uses internally for its 4 FMP endpoints, for
+   the same reason: sequential blocking price lookups across several tickers would sum their
+   latency instead of overlapping it.
+3. Computes `value = shares × price` per ticker, sums to `totalValue`, computes `weightPercent =
+   value ÷ totalValue`, sorts descending.
+4. A ticker whose price lookup fails is **excluded** from the ranking and from `totalValue` —
+   not treated as $0, which would silently understate every other position's weight — and
+   surfaced via `pricingUnavailableFor` so the agent says so rather than presenting a quietly-
+   incomplete picture as complete.
+
+**Why keep both `getPortfolioHoldings` and `getPortfolioAllocation` instead of merging them**:
+they answer genuinely different questions with different cost/reliability profiles.
+`getPortfolioHoldings` is a pure Firestore query — fast, cheap, and can never fail due to FMP
+being down, because it never calls FMP. `getPortfolioAllocation` needs a live price for every
+distinct ticker held, so it's inherently heavier and inherits FMP's availability. Routing a
+plain "how many shares of X" question through the pricier tool would make it pay for a dependency
+it never needed. The agent's instruction in `AgentConfig` states explicitly which tool to use for
+which question shape, the same pattern already used for `searchPortfolio` vs.
+`getPortfolioHoldings`.
+
+**Verified live**, hand-checked against real prices, not just inspected: a 7-ticker portfolio
+(GOOGL split across 3 accounts, plus JPM/AAPL/KO/AMZN/MSFT/NVDA) produced a `totalValue` and
+per-ticker `weightPercent` that matched hand computation (`shares × price`, summed, divided)
+exactly to the fraction of a cent — e.g. GOOGL's 100 shares × $327.89999 = $32,789.999,
+19.944% of the $164,409.349 total, both matching the tool's own output precisely.
+
+**A real discovery from that live test, not a bug**: FMP's free tier returns HTTP 402 for ETF/
+mutual-fund tickers (`VTI`, `BND`, `FXAIX` all failed) and specifically doesn't recognize `GOOG`
+(Alphabet's Class C shares) — only `GOOGL` (Class A) works. Confirmed directly against FMP's API,
+not inferred. The graceful-degradation design (exclude, don't zero) handled this correctly
+without any code change — but it's a real, practical limitation worth knowing: a real user's
+statement that literally says "GOOG" (as many brokerages print it) or holds ETFs will get partial
+`pricingUnavailableFor` results on this free tier. Noted in [Gotchas](#gotchas-discovered-the-hard-way)
+rather than silently fixed — a `GOOG`→`GOOGL` alias could be added later if it's worth the special
+case, but wasn't done reflexively here.
+
 ## Real market data
 
 `StockLookupTool`/`getStockData` originally returned prices from a hardcoded mock map. It now
@@ -751,6 +802,20 @@ These aren't documented anywhere obvious — found by actually running the app, 
 4. **The real Maven coordinate is `com.google.adk:google-adk`** — an earlier draft of the design
    doc referenced `google-adk-spring-boot-starter`, which doesn't exist.
 
+5. **ADK tool parameters are required by default — `@Schema(optional = true)` must be set
+   explicitly**, or ADK rejects the model's call in its own argument-binding layer *before your
+   tool method ever runs*, surfacing as a generic "internal error" with no other detail. See
+   `PortfolioHoldingsTool`'s javadoc for the full story — found live when "analyze all my
+   holdings" (no specific ticker) reliably crashed until this was set.
+
+6. **FMP's free tier returns HTTP 402 for ETF/mutual-fund tickers, and doesn't recognize `GOOG`
+   specifically** — only `GOOGL` (Alphabet's Class A shares). Confirmed directly against the API:
+   `VTI`/`BND`/`FXAIX` all 402, `GOOGL` 200, `GOOG` 402. A real brokerage statement that prints
+   "GOOG" (common) or holds ETFs will get partial `pricingUnavailableFor` results from
+   `getPortfolioAllocation` on this plan — see the "Portfolio allocation" subsection under
+   [Portfolio holdings](#portfolio-holdings) for how that's handled (excluded, not silently
+   zeroed) and why no `GOOG`→`GOOGL` alias was added reflexively.
+
 ## Milestone status
 
 1. ✅ Single agent + one tool + `/api/chat`, in-memory sessions.
@@ -780,4 +845,11 @@ These aren't documented anywhere obvious — found by actually running the app, 
    GOOG shares across 3 brokerages) in a way chunk-based RAG retrieval structurally can't
    guarantee. Per-user isolation is unchanged — every new collection/query still scopes by
    `userId` the same way `portfolio_vectors` always has.
-9. ⏳ Cloud Run deployment — not started.
+9. ✅ Portfolio allocation by value/weight (`PortfolioAllocationTool.getPortfolioAllocation`, see
+   the "Portfolio allocation" subsection under [Portfolio holdings](#portfolio-holdings)) —
+   share-count aggregation alone couldn't answer concentration/risk questions; this layers live
+   price × shares = value, weight% of total, and ranking on top, reusing
+   `PortfolioHoldingsTool`'s share-summing logic rather than duplicating it. Verified live and
+   hand-checked exact against real prices; also surfaced a real FMP free-tier limitation (ETFs and
+   `GOOG` specifically return HTTP 402) now documented in Gotchas.
+10. ⏳ Cloud Run deployment — not started.

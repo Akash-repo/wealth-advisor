@@ -3,6 +3,7 @@ package com.wealth.advisor.agent;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.tools.FunctionTool;
+import com.wealth.advisor.agent.tool.PortfolioAllocationTool;
 import com.wealth.advisor.agent.tool.PortfolioHoldingsTool;
 import com.wealth.advisor.agent.tool.PortfolioSearchTool;
 import com.wealth.advisor.agent.tool.StockLookupTool;
@@ -40,6 +41,7 @@ public class AgentConfig {
 	public LlmAgent portfolioAnalysisAgent(
 			PortfolioSearchTool portfolioSearchTool,
 			PortfolioHoldingsTool portfolioHoldingsTool,
+			PortfolioAllocationTool portfolioAllocationTool,
 			StockLookupTool stockLookupTool,
 			AgentAuditRecorder agentAuditRecorder,
 			ToolUsageRecorder toolUsageRecorder) {
@@ -58,9 +60,15 @@ public class AgentConfig {
 						  found=false, no portfolio has been uploaded yet, so say that plainly instead of
 						  inventing numbers.
 						- getPortfolioHoldings — the exact number of shares of a ticker the user holds,
-						  summed across every brokerage account they've uploaded a statement for. Always
-						  use this (not searchPortfolio) for "how much of X do I hold" or "what are all my
-						  holdings" — searchPortfolio can miss holdings split across multiple documents.
+						  summed across every brokerage account they've uploaded a statement for, plus cost
+						  basis. Use this for "how many shares of X do I hold" or "what's my cost basis on
+						  X" — it does not know dollar value or how big a position is relative to the rest
+						  of the portfolio.
+						- getPortfolioAllocation — each position's current dollar value and % weight of the
+						  total, ranked largest to smallest. Always use this (not getPortfolioHoldings) for
+						  concentration/risk questions: "what's my biggest position", "how much of my
+						  portfolio is X", "am I overexposed to tech", "top N holdings". Share count alone
+						  cannot answer these — value and weight can.
 						- getStockData — current price and fundamentals (P/E, PEG, forward P/E, EPS growth,
 						  free cash flow per share) for a stock the user mentions. Data may be up to a day
 						  stale, which is fine to mention if relevant but not something to caveat every time.
@@ -71,15 +79,15 @@ public class AgentConfig {
 				.tools(
 						FunctionTool.create(stockLookupTool, "getStockData"),
 						FunctionTool.create(portfolioSearchTool, "searchPortfolio"),
-						FunctionTool.create(portfolioHoldingsTool, "getPortfolioHoldings"))
+						FunctionTool.create(portfolioHoldingsTool, "getPortfolioHoldings"),
+						FunctionTool.create(portfolioAllocationTool, "getPortfolioAllocation"))
 				.outputKey("portfolio_analysis")
 				// Every real call to Gemini this agent makes gets recorded to BigQuery — see
 				// AgentAuditRecorder's javadoc for how a whole turn gets correlated across agents.
 				.beforeModelCallbackSync(agentAuditRecorder::beforeModel)
 				.afterModelCallbackSync(agentAuditRecorder::afterModel)
-				// Same idea, one level down: every real tool call this agent makes (searchPortfolio,
-				// getStockData, getPortfolioHoldings) gets recorded to BigQuery too — see
-				// ToolUsageRecorder's javadoc.
+				// Same idea, one level down: every real tool call this agent makes gets recorded to
+				// BigQuery too — see ToolUsageRecorder's javadoc.
 				.beforeToolCallbackSync(toolUsageRecorder::beforeTool)
 				.afterToolCallbackSync(toolUsageRecorder::afterTool)
 				.onToolErrorCallbackSync(toolUsageRecorder::onToolError)
