@@ -1,0 +1,10 @@
+Vanguard Brokerage Account Statement
+Account Holder: Demo User
+Account Number: V-1234567
+
+Holdings as of this statement:
+- Alphabet Inc Class A (GOOGL): 50 shares, cost basis $95.00 per share
+- JPMorgan Chase & Co (JPM): 200 shares, cost basis $140.00 per share
+- Coca-Cola Co (KO): 150 shares, cost basis $60.00 per share
+
+This account is held at Vanguard.

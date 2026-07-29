@@ -1,0 +1,10 @@
+Fidelity Investments Account Statement
+Account Holder: Demo User
+Account Number: F-7654321
+
+Current Holdings:
+- Alphabet Inc Class A (GOOGL): 30 shares, cost basis $110.00 per share
+- Apple Inc (AAPL): 80 shares, cost basis $160.00 per share
+- Microsoft Corporation (MSFT): 20 shares, cost basis $300.00 per share
+
+This account is held at Fidelity.
