@@ -20,6 +20,7 @@ file grows as new questions come up.
 - [Portfolio holdings](#portfolio-holdings)
 - [Real market data](#real-market-data)
 - [BigQuery audit log](#bigquery-audit-log)
+- [Evals](#evals)
 - [Environment variables](#environment-variables)
 - [Gotchas discovered the hard way](#gotchas-discovered-the-hard-way)
 - [Milestone status](#milestone-status)
@@ -756,6 +757,91 @@ limits as tool/agent count grows, not just at today's scale.
    to an already-created table without recreating it (a bigger, riskier change than adding a
    constraint). Flagged as a reasonable follow-up, not done as a drive-by.
 
+## Evals
+
+"Evals" here means: a small, versioned, automatically-runnable suite (`PortfolioEvalTest`) that
+answers "did the agent pipeline do the right thing" — a different question from unit/integration
+tests, which answer "does the code run without throwing." ADK's own eval support (Python-only,
+minimal) isn't usable from Java, so this is hand-built on top of the existing test stack rather
+than a framework feature.
+
+**Three layers of assertion, cheapest/most-deterministic first:**
+
+1. **Trajectory** — exact-match against `tool_invocations`: was the right tool called at all (e.g.
+   `getPortfolioAllocation` for a concentration question, not just `getStockData`)? No LLM judge
+   needed — either the row is there or it isn't.
+2. **Hand-off** — exact-match/substring against `agent_audit_log.input_to_agent2`: did
+   `portfolio_analysis`'s summary actually mention the thing the question was about, before
+   `stock_recommendation` ever saw it?
+3. **Response quality** — the one layer that's inherently fuzzy (natural-language reasoning, not a
+   fixed value), graded by `JudgeService`: a second Gemini call, given the response plus explicit
+   *ground-truth facts* (never left for the judge to infer — e.g. "JPM is ~43% of portfolio value,
+   the largest position"), returns a structured `{answer: boolean, reasoning: string}` verdict.
+   Judge prompts are written as narrow yes/no questions ("does this response cite the JPM position
+   as a specific reason for caution"), not "is this a good response" — narrow questions are both
+   more reliable and, when they fail, tell you *what* was wrong via `reasoning`. Hard exact-match
+   negatives are preferred over judge calls wherever the fact is checkable without one (see Case 5
+   below) — a judge call is a second LLM in the loop, so it's used only where a fixed check
+   genuinely can't substitute.
+
+**The 5 cases** (fixture: `src/test/resources/eval-fixtures/`, 3 synthetic brokerage PDFs —
+Vanguard/Fidelity/Merrill — encoding a portfolio where JPM is ~43% of value, the single largest
+position, and GOOGL+AAPL+MSFT+NVDA together are a comparable second concentration; see that
+directory's `README.md` for the full ground truth and which tickers are safe against FMP's free
+tier):
+
+1. **`getPortfolioHoldings_noTicker_doesNotCrash`** — regression guard for the ADK
+   `@Schema(optional)` crash (Gotcha #5): "what are all my holdings" must call the tool with no
+   ticker and succeed, not error.
+2. **`concentrationWarning_jpm`** — "should I buy more JPM" must cite the user's *existing* JPM
+   concentration as the reason for caution, not a generic disclaimer.
+3. **`diversificationOpportunity_jnj`** — paired with Case 2 deliberately: "should I buy JNJ" must
+   be framed as improving diversification, not warned against. An agent that reflexively hedges on
+   everything would pass Case 2 alone; passing both proves the reasoning tracks the real data.
+4. **`portfolioRiskAnalysis`** — open-ended risk analysis. The hallucination check (inverted judge
+   verdict — must come back `false`) is the most important assertion in this suite: the response
+   must not invent exposure (healthcare/bonds/international) that doesn't exist in the fixture.
+5. **`trimAddSuggestion`** — "what should I trim/add" must name JPM as a trim candidate and suggest
+   an underrepresented area, and must **never** recommend adding to JPM or the tech names — this
+   hard negative is exact-match/judge-as-negative rather than a positive judge call, since a
+   response that contradicts its own prior analysis is unambiguous and doesn't need interpretation.
+
+**System-level, not component-level, deliberately.** Every case goes through real HTTP
+(`TestRestTemplate`), a real Gemini call, and real ADK tool-argument binding — not a direct Java
+call to a tool class. This isn't just "more realistic": the `@Schema(optional)` crash Case 1 guards
+against lived inside ADK's own argument-binding layer, which a direct-call test would never
+exercise (Java doesn't care that a parameter is null; ADK's model-facing binding does). Only a test
+that goes through the real model → real function-call decision → real ADK binding could catch it,
+and did, live, before this suite existed. `JudgeService` itself is tested separately and at the
+component level (`JudgeServiceTest`) — nothing about grading a fixed pair of strings needs the real
+chat pipeline.
+
+**Bugs this suite found on its first live runs, before a single line of it was trusted:**
+
+- `portfolio_analysis` could answer "should I buy more JPM" by asking the user whether they'd like
+  it to fetch data, instead of just fetching it — leaving `stock_recommendation` with nothing to
+  reason about and no error anywhere to signal it. Fixed by making the instruction explicit: never
+  ask permission to look something up, and any buy/trim/evaluate question always requires calling
+  both `getPortfolioAllocation` and `getStockData` before summarizing, regardless of whether the
+  user mentioned "portfolio" at all.
+- Risk-analysis responses reported JPM's concentration but treated a same-sized group of
+  same-sector holdings as unrelated numbers, since `getPortfolioAllocation` has no sector field to
+  hand the model — fixed by telling the agent explicitly to do that grouping itself from its own
+  knowledge, not just report the single largest position.
+- The judge rubric for the sector-grouping check originally hard-coded this project's own fixture
+  taxonomy (excluding AMZN from "tech"). A response that reasonably classified AMZN as tech too
+  (a genuinely ambiguous, defensible call — AMZN is commonly grouped with "big tech") failed a
+  taxonomy-matching test that had nothing to do with the actual reasoning quality being checked.
+  Loosened to ask whether *a* comparably-sized second concentration was identified and named at
+  all, not whether it used this project's exact ticker grouping — a reminder that an eval judge
+  question should test the behavior that matters, not incidentally re-test an arbitrary authoring
+  choice baked into the fixture.
+
+**Run with:** `./mvnw -Dtest=PortfolioEvalTest test` (tagged `eval`, not part of the default `mvn
+test` run — these make real, non-free Gemini/FMP calls and take ~100s for the full suite, not
+milliseconds). Verified stable across two independent full live runs (5/5 both times) — LLM output
+is not literally deterministic, so a single green run isn't itself proof a fix holds.
+
 ## Environment variables
 
 | Variable                  | Purpose                                                              |
@@ -816,6 +902,21 @@ These aren't documented anywhere obvious — found by actually running the app, 
    [Portfolio holdings](#portfolio-holdings) for how that's handled (excluded, not silently
    zeroed) and why no `GOOG`→`GOOGL` alias was added reflexively.
 
+7. **`QueryParameterValue.timestamp(String)` does not accept `Instant.toString()`.** Java's
+   ISO-8601 (`2026-07-29T10:06:50.492570Z` — `T` separator, 6-digit microseconds) fails BigQuery's
+   client-side format check, which expects BigQuery's own timestamp literal format instead. Use the
+   `timestamp(Long epochMicros)` overload (`instant.getEpochSecond() * 1_000_000L +
+   instant.getNano() / 1_000L`) and skip string formatting entirely — found live via
+   `PortfolioEvalTest`'s BigQuery polling helper.
+
+8. **An agent can "solve" a missing-tool-call problem by asking the user for permission instead of
+   just calling the tool** — a plausible-looking, grammatically fine response that leaves the next
+   agent in a `SequentialAgent` pipeline with nothing real to act on, and no exception anywhere to
+   signal it. Only visible by inspecting the actual `agent_audit_log`/`tool_invocations` rows for a
+   turn, not from the reply text alone. See [Evals](#evals) for the fix (an explicit
+   never-ask-just-fetch instruction) and how `PortfolioEvalTest` catches it via a trajectory
+   assertion.
+
 ## Milestone status
 
 1. ✅ Single agent + one tool + `/api/chat`, in-memory sessions.
@@ -852,4 +953,10 @@ These aren't documented anywhere obvious — found by actually running the app, 
    `PortfolioHoldingsTool`'s share-summing logic rather than duplicating it. Verified live and
    hand-checked exact against real prices; also surfaced a real FMP free-tier limitation (ETFs and
    `GOOG` specifically return HTTP 402) now documented in Gotchas.
-10. ⏳ Cloud Run deployment — not started.
+10. ✅ Eval suite (`PortfolioEvalTest`, see [Evals](#evals)) — 5 system-level cases covering the
+    ADK optional-schema crash regression, concentration/diversification reasoning (paired to rule
+    out reflexive hedging), open-ended risk analysis with a hallucination check, and a hard-negative
+    trim/add check. Found and fixed two real agent-behavior gaps (asking permission instead of
+    calling a tool; not grouping same-sector positions) before this suite existed to catch them.
+    Verified stable across two independent live runs.
+11. ⏳ Cloud Run deployment — not started.
