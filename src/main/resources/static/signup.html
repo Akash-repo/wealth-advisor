@@ -2,54 +2,34 @@
 <html lang="en">
 <head>
 	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>Wealth Advisor - Sign up</title>
-	<style>
-		body { font-family: system-ui, sans-serif; display: flex; justify-content: center; margin-top: 10vh; }
-		form { display: flex; flex-direction: column; gap: 0.75rem; width: 20rem; }
-		input, button { padding: 0.5rem; font-size: 1rem; }
-		h1 { text-align: center; }
-		#error { color: #c00; font-size: 0.85rem; min-height: 1.2rem; }
-		a { text-align: center; font-size: 0.9rem; }
-	</style>
+	<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
 </head>
-<body>
-<form id="signup-form">
-	<h1>Create account</h1>
-	<input type="text" id="username" placeholder="Username (3-30 letters/numbers/_/-)" autofocus required pattern="[a-zA-Z0-9_-]{3,30}">
-	<input type="email" id="email" placeholder="Email" required>
-	<input type="password" id="password" placeholder="Password (min 6 characters)" required minlength="6">
-	<div id="error"></div>
-	<button type="submit">Sign up</button>
-	<a href="/login.html">Already have an account? Log in</a>
-</form>
-
-<script>
-	const form = document.getElementById('signup-form');
-	const errorDiv = document.getElementById('error');
-
-	form.addEventListener('submit', async (event) => {
-		event.preventDefault();
-		errorDiv.textContent = '';
-
-		const body = {
-			username: document.getElementById('username').value,
-			email: document.getElementById('email').value,
-			password: document.getElementById('password').value,
-		};
-
-		const response = await fetch('/api/auth/register', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(body),
-		});
-
-		if (response.ok) {
-			window.location.href = '/login.html';
-			return;
-		}
-		const data = await response.json();
-		errorDiv.textContent = data.error || 'Registration failed.';
-	});
-</script>
+<body class="bg-light">
+<div class="d-flex align-items-center justify-content-center min-vh-100">
+	<div class="card shadow-sm" style="width: 22rem;">
+		<div class="card-body">
+			<h4 class="card-title text-center mb-3">Create account</h4>
+			<form id="signup-form">
+				<div class="mb-3">
+					<input type="text" id="username" class="form-control" placeholder="Username (3-30 letters/numbers/_/-)" autofocus required pattern="[a-zA-Z0-9_-]{3,30}">
+				</div>
+				<div class="mb-3">
+					<input type="email" id="email" class="form-control" placeholder="Email" required>
+				</div>
+				<div class="mb-3">
+					<input type="password" id="password" class="form-control" placeholder="Password (min 6 characters)" required minlength="6">
+				</div>
+				<div id="error" class="alert alert-danger py-1 px-2 small d-none"></div>
+				<button type="submit" class="btn btn-primary w-100">Sign up</button>
+			</form>
+			<div class="text-center mt-3">
+				<a href="/login.html" class="small">Already have an account? Log in</a>
+			</div>
+		</div>
+	</div>
+</div>
+<script src="/js/signup.js"></script>
 </body>
 </html>

@@ -2,140 +2,63 @@
 <html lang="en">
 <head>
 	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>Wealth Advisor</title>
-	<style>
-		body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; }
-		header { display: flex; justify-content: space-between; align-items: center; }
-		#log { border: 1px solid #ccc; border-radius: 0.5rem; padding: 1rem; height: 24rem; overflow-y: auto; margin: 1rem 0; }
-		.msg { margin-bottom: 0.75rem; white-space: pre-wrap; }
-		.msg.user { text-align: right; color: #1a4; }
-		.msg.agent { text-align: left; color: #333; }
-		form { display: flex; gap: 0.5rem; }
-		input[type=text] { flex: 1; padding: 0.5rem; font-size: 1rem; }
-		button { padding: 0.5rem 1rem; }
-		#upload-form { align-items: center; flex-wrap: wrap; margin-bottom: 0.25rem; }
-		#upload-status { font-size: 0.85rem; color: #666; }
-		#documents { font-size: 0.85rem; color: #444; margin-bottom: 1rem; }
-		#documents ul { list-style: none; padding: 0; margin: 0.25rem 0; }
-		#documents li { display: flex; justify-content: space-between; align-items: center; padding: 0.25rem 0; }
-		#documents .doc-delete { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
-	</style>
+	<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
+	<link href="/css/app.css" rel="stylesheet">
 </head>
-<body>
-<header>
-	<h2>Wealth Advisor</h2>
-	<form method="post" action="/api/auth/logout"><button type="submit">Log out</button></form>
-</header>
+<body class="bg-light">
+<nav class="navbar navbar-dark bg-primary mb-3">
+	<div class="container" style="max-width: 40rem;">
+		<span class="navbar-brand mb-0 h1">Wealth Advisor</span>
+		<form method="post" action="/api/auth/logout">
+			<button type="submit" class="btn btn-outline-light btn-sm">Log out</button>
+		</form>
+	</div>
+</nav>
 
-<form id="upload-form">
-	<input id="portfolio-file" type="file" accept="application/pdf" multiple required>
-	<select id="document-type">
-		<option value="brokerage">Brokerage statement</option>
-		<option value="resume">Resume</option>
-		<option value="bank_statement">Bank statement</option>
-		<option value="other">Other</option>
-	</select>
-	<button type="submit">Upload</button>
-	<span id="upload-status"></span>
-</form>
+<div class="container pb-4" style="max-width: 40rem;">
 
-<div id="documents">
-	<strong>Your documents</strong>
-	<ul id="documents-list"></ul>
+	<div class="card mb-3">
+		<div class="card-body">
+			<h6 class="card-subtitle mb-2 text-muted">Upload portfolio documents</h6>
+			<form id="upload-form" class="row g-2 align-items-center">
+				<div class="col-12 col-sm">
+					<input id="portfolio-file" type="file" class="form-control form-control-sm" accept="application/pdf" multiple required>
+				</div>
+				<div class="col-auto">
+					<select id="document-type" class="form-select form-select-sm">
+						<option value="brokerage">Brokerage statement</option>
+						<option value="resume">Resume</option>
+						<option value="bank_statement">Bank statement</option>
+						<option value="other">Other</option>
+					</select>
+				</div>
+				<div class="col-auto">
+					<button type="submit" class="btn btn-sm btn-primary">Upload</button>
+				</div>
+			</form>
+			<div id="upload-status" class="form-text mt-1"></div>
+		</div>
+	</div>
+
+	<div class="card mb-3">
+		<div class="card-body">
+			<h6 class="card-subtitle mb-2 text-muted">Your documents</h6>
+		</div>
+		<ul id="documents-list" class="list-group list-group-flush"></ul>
+	</div>
+
+	<div id="chat-log" class="border rounded-3 p-3 mb-3 bg-white" style="height: 24rem; overflow-y: auto;"></div>
+
+	<form id="chat-form" class="input-group mb-4">
+		<input id="message" type="text" class="form-control" placeholder="Ask about a stock or your portfolio..." autocomplete="off" required>
+		<button type="submit" class="btn btn-primary">Send</button>
+	</form>
+
 </div>
 
-<div id="log"></div>
-
-<form id="chat-form">
-	<input id="message" type="text" placeholder="Ask about a stock or your portfolio..." autocomplete="off" required>
-	<button type="submit">Send</button>
-</form>
-
-<script>
-	const log = document.getElementById('log');
-	const form = document.getElementById('chat-form');
-	const messageInput = document.getElementById('message');
-	const uploadForm = document.getElementById('upload-form');
-	const portfolioFile = document.getElementById('portfolio-file');
-	const documentType = document.getElementById('document-type');
-	const uploadStatus = document.getElementById('upload-status');
-	const documentsList = document.getElementById('documents-list');
-
-	async function refreshDocuments() {
-		const response = await fetch('/api/portfolio/documents');
-		if (!response.ok) return;
-		const docs = await response.json();
-		documentsList.innerHTML = '';
-		if (docs.length === 0) {
-			documentsList.innerHTML = '<li>No documents uploaded yet.</li>';
-			return;
-		}
-		for (const doc of docs) {
-			const li = document.createElement('li');
-			const label = document.createElement('span');
-			label.textContent = `${doc.filename} (${doc.documentType}, ${doc.chunkCount} chunk(s)${doc.holdingsCount ? ', ' + doc.holdingsCount + ' holding(s)' : ''})`;
-			const deleteButton = document.createElement('button');
-			deleteButton.textContent = 'Delete';
-			deleteButton.className = 'doc-delete';
-			deleteButton.addEventListener('click', async () => {
-				await fetch(`/api/portfolio/documents/${encodeURIComponent(doc.filename)}`, { method: 'DELETE' });
-				refreshDocuments();
-			});
-			li.append(label, deleteButton);
-			documentsList.appendChild(li);
-		}
-	}
-
-	uploadForm.addEventListener('submit', async (event) => {
-		event.preventDefault();
-		const files = Array.from(portfolioFile.files);
-		if (files.length === 0) return;
-
-		for (const file of files) {
-			uploadStatus.textContent = `Uploading ${file.name}...`;
-			const body = new FormData();
-			body.append('file', file);
-			body.append('documentType', documentType.value);
-			const response = await fetch('/api/portfolio/upload', { method: 'POST', body });
-			if (!response.ok) {
-				uploadStatus.textContent = `Upload failed for ${file.name}: ` + response.status;
-				return;
-			}
-		}
-		uploadStatus.textContent = `Uploaded ${files.length} document(s).`;
-		portfolioFile.value = '';
-		refreshDocuments();
-	});
-
-	function appendMessage(text, who) {
-		const div = document.createElement('div');
-		div.className = 'msg ' + who;
-		div.textContent = text;
-		log.appendChild(div);
-		log.scrollTop = log.scrollHeight;
-	}
-
-	form.addEventListener('submit', async (event) => {
-		event.preventDefault();
-		const message = messageInput.value.trim();
-		if (!message) return;
-		appendMessage(message, 'user');
-		messageInput.value = '';
-
-		const response = await fetch('/api/chat', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ message }),
-		});
-		if (!response.ok) {
-			appendMessage('Error: ' + response.status, 'agent');
-			return;
-		}
-		const data = await response.json();
-		appendMessage(data.reply, 'agent');
-	});
-
-	refreshDocuments();
-</script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js" integrity="sha384-FKyoEForCGlyvwx9Hj09JcYn3nv7wiPVlz7YYwJrWVcXK/BmnVDxM+D2scQbITxI" crossorigin="anonymous"></script>
+<script src="/js/chat.js"></script>
 </body>
 </html>
