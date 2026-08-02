@@ -1,7 +1,52 @@
 /* Small, deliberate additions on top of Bootstrap — not a redesign of it.
    Bootstrap's own utility classes (card, list-group, input-group, etc.) handle
-   everything else directly in the HTML; this file exists only for the one
-   thing Bootstrap has no component for: chat bubbles. */
+   everything else directly in the HTML; this file exists mostly for brand
+   color overrides and the one thing Bootstrap has no component for: chat
+   bubbles. */
+
+/* Merrill-style navy: overriding --bs-primary/--bs-primary-rgb re-themes every
+   Bootstrap utility that reads them at use-time (bg-primary, text-primary,
+   links, focus rings). .btn-primary is separately overridden below because
+   Bootstrap 5.3 bakes its hover/active shades as static hex in its own
+   component-scoped --bs-btn-* variables rather than reading --bs-primary. */
+:root {
+	--bs-primary: #0a2f5c;
+	--bs-primary-rgb: 10, 47, 92;
+	--bs-link-color: #0a2f5c;
+	--bs-link-color-rgb: 10, 47, 92;
+	--bs-link-hover-color: #082444;
+	--bs-link-hover-color-rgb: 8, 36, 68;
+}
+
+.btn-primary {
+	--bs-btn-bg: #0a2f5c;
+	--bs-btn-border-color: #0a2f5c;
+	--bs-btn-hover-bg: #0d3d74;
+	--bs-btn-hover-border-color: #0d3d74;
+	--bs-btn-active-bg: #082444;
+	--bs-btn-active-border-color: #082444;
+	--bs-btn-disabled-bg: #0a2f5c;
+	--bs-btn-disabled-border-color: #0a2f5c;
+	--bs-btn-focus-shadow-rgb: 10, 47, 92;
+}
+
+.brand-mark {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 2rem;
+	height: 2rem;
+	border-radius: 50%;
+	background-color: #fff;
+	color: var(--bs-primary);
+	font-weight: 700;
+	font-size: 0.85rem;
+	margin-right: 0.55rem;
+}
+
+.auth-card {
+	border-top: 4px solid var(--bs-primary);
+}
 
 #chat-log {
 	display: flex;
