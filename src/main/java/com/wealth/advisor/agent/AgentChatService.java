@@ -1,12 +1,9 @@
 package com.wealth.advisor.agent;
 
-import com.google.adk.agents.BaseAgent;
-import com.google.adk.agents.SequentialAgent;
 import com.google.adk.events.Event;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.FirestoreSessionService;
 import com.google.adk.sessions.SessionNotFoundException;
-import com.google.cloud.firestore.Firestore;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import com.wealth.advisor.audit.AgentAuditRecorder;
@@ -53,8 +50,9 @@ import org.springframework.stereotype.Service;
  * written; for {@code AgentAuditRecorder} that also attaches the per-agent hand-off ({@code
  * input_to_agent2}) and final reply to the same row.
  *
- * @see AgentConfig for how {@code wealthAdvisorPipeline} (the {@link SequentialAgent} this class
- *     runs) is assembled
+ * @see AgentConfig for how the {@code SequentialAgent} pipeline, the {@link Runner} bean, and the
+ *     {@code agent1Name}/{@code agent2Name} beans this class is handed are all assembled — every
+ *     ADK object this app builds lives there, this class only consumes the finished results
  */
 @Service
 public class AgentChatService {
@@ -62,30 +60,24 @@ public class AgentChatService {
 	private static final Logger log = LoggerFactory.getLogger(AgentChatService.class);
 
 	private final Runner runner;
-	private final AgentAuditRecorder agentAuditRecorder;
-	private final ToolUsageRecorder toolUsageRecorder;
 	private final String agent1Name;
 	private final String agent2Name;
+	private final AgentAuditRecorder agentAuditRecorder;
+	private final ToolUsageRecorder toolUsageRecorder;
 
 	public AgentChatService(
-			SequentialAgent wealthAdvisorPipeline,
-			Firestore firestore,
+			Runner runner,
+			String agent1Name,
+			String agent2Name,
 			AgentAuditRecorder agentAuditRecorder,
 			ToolUsageRecorder toolUsageRecorder) {
-		this.runner =
-				Runner.builder()
-						.agent(wealthAdvisorPipeline)
-						.appName(wealthAdvisorPipeline.name())
-						.sessionService(new FirestoreSessionService(firestore))
-						.build();
+		this.runner = runner;
+		this.agent1Name = agent1Name;
+		this.agent2Name = agent2Name;
 		this.agentAuditRecorder = agentAuditRecorder;
 		this.toolUsageRecorder = toolUsageRecorder;
-		List<? extends BaseAgent> subAgents = wealthAdvisorPipeline.subAgents();
-		this.agent1Name = subAgents.get(0).name();
-		this.agent2Name = subAgents.get(1).name();
 		log.info(
-				"AgentChatService ready: agent='{}', appName='{}', pipeline={} -> {}",
-				wealthAdvisorPipeline.name(),
+				"AgentChatService ready: appName='{}', pipeline={} -> {}",
 				runner.appName(),
 				agent1Name,
 				agent2Name);

@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,7 +35,12 @@ import org.springframework.stereotype.Component;
  * CompletableFuture}, the same "many independent lookups, combine results" shape {@code
  * MarketDataService} itself already uses for its 4 FMP endpoints, for the same reason: a handful
  * of sequential blocking price lookups would otherwise sum their latency instead of overlapping
- * it.
+ * it. Dispatched on the dedicated {@code priceLookupExecutor} bean ({@link
+ * com.wealth.advisor.infra.ExecutorConfig}) rather than the JVM-wide {@code
+ * ForkJoinPool.commonPool()} {@code CompletableFuture.supplyAsync(...)} would otherwise silently
+ * use — see that class's javadoc and {@code Optimization.md} P1-5 for why that mattered here
+ * specifically (each task blocks on real network I/O, and the common pool's default parallelism is
+ * minimal on a 1-vCPU Cloud Run instance).
  *
  * <p>A ticker whose price lookup fails is <strong>excluded</strong> from the ranking and from
  * {@code totalValue} — not treated as $0, which would silently understate every other position's
@@ -48,10 +54,13 @@ public class PortfolioAllocationTool {
 
 	private final Firestore firestore;
 	private final MarketDataService marketDataService;
+	private final ExecutorService priceLookupExecutor;
 
-	public PortfolioAllocationTool(Firestore firestore, MarketDataService marketDataService) {
+	public PortfolioAllocationTool(
+			Firestore firestore, MarketDataService marketDataService, ExecutorService priceLookupExecutor) {
 		this.firestore = firestore;
 		this.marketDataService = marketDataService;
+		this.priceLookupExecutor = priceLookupExecutor;
 	}
 
 	@Schema(
@@ -90,7 +99,12 @@ public class PortfolioAllocationTool {
 
 		Map<String, CompletableFuture<Map<String, Object>>> priceFutures =
 				byTicker.keySet().stream()
-						.collect(Collectors.toMap(t -> t, t -> CompletableFuture.supplyAsync(() -> marketDataService.getStockData(t))));
+						.collect(
+								Collectors.toMap(
+										t -> t,
+										t ->
+												CompletableFuture.supplyAsync(
+														() -> marketDataService.getStockData(t), priceLookupExecutor)));
 		CompletableFuture.allOf(priceFutures.values().toArray(new CompletableFuture[0])).join();
 
 		Map<String, Double> valueByTicker = new LinkedHashMap<>();

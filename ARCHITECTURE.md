@@ -862,10 +862,11 @@ Financial Modeling Prep is a third-party SaaS API, not a GCP service — ADC has
 
 ## GCP deployment (Cloud Run)
 
-A runbook, not a retrospective — nothing in this section has been executed yet (milestone 11 below
-is still ⏳). Written so the deployment can actually be followed step by step when it happens,
-rather than reconstructed from memory. Update this section with what actually happened/what broke
-once it's done live, the same way every other section in this doc was written after the fact.
+Deployed live on 2026-07-30 (milestone 11 is now ✅). Originally written as a forward-looking
+runbook before execution; now updated with what actually happened, the same way every other
+section in this doc was written after the fact. The steps below matched reality except for one gap
+— step 3 (build-time IAM) wasn't anticipated by the original design and was found live, the same
+way the [Gotchas](#gotchas-discovered-the-hard-way) list generally gets built.
 
 **Why Cloud Run Service** (not Jobs, not GKE): this app is a plain request/response HTTP service
 with no background/batch work, so Jobs doesn't fit. GKE would mean managing a cluster for a single
@@ -925,7 +926,47 @@ for role in roles/datastore.user roles/aiplatform.user roles/bigquery.dataEditor
 done
 ```
 
-### 3. `FMP_API_KEY` via Secret Manager
+### 3. Build-time (Cloud Build) service account permissions
+
+**Concept:** `gcloud run deploy --source .` doesn't build the container itself — it hands the
+source to Cloud Build, which runs as a *separate* identity from the runtime service account
+configured in step 2. On projects created after mid-2024, GCP no longer auto-grants `Editor` to the
+default Compute Engine service account (`<PROJECT_NUMBER>-compute@developer.gserviceaccount.com`),
+which is what `gcloud run deploy --source .` uses for the build unless told otherwise. So step 2's
+runtime IAM being correct says nothing about whether the *build* can even run — this is a second,
+independent IAM surface the deploy command doesn't surface, and the errors it throws don't
+obviously point at IAM as the cause. Found live, in this order:
+
+1. `gcloud run deploy` fails with a generic "Build failed; check build logs for details", and even
+   `gcloud builds log <BUILD_ID>` itself fails with "No logs were found... service account ... does
+   not have permission to write the logs." Root cause: the build SA lacked `roles/logging.logWriter`.
+2. After granting that, the real build error surfaces: buildpacks' `ANALYZING` phase fails with
+   `DENIED: Permission 'artifactregistry.repositories.downloadArtifacts' denied` against the
+   auto-created `cloud-run-source-deploy` Artifact Registry repo. Root cause: the build SA lacked
+   `roles/artifactregistry.writer` (needed for both the pull-for-cache-check on `ANALYZING` and the
+   final image push).
+
+**Action** — grant both to the default compute service account before the first deploy:
+
+```bash
+gcloud projects add-iam-policy-binding <PROJECT_ID> \
+  --member="serviceAccount:<PROJECT_NUMBER>-compute@developer.gserviceaccount.com" \
+  --role="roles/logging.logWriter"
+
+gcloud projects add-iam-policy-binding <PROJECT_ID> \
+  --member="serviceAccount:<PROJECT_NUMBER>-compute@developer.gserviceaccount.com" \
+  --role="roles/artifactregistry.writer"
+```
+
+`roles/storage.objectViewer` (to read the uploaded source tarball from Cloud Build's GCS staging
+bucket) was also present on this project's build SA — not traced back to a specific failure here,
+but standard for source-based builds and worth granting explicitly rather than assuming it's there.
+
+One-time setup per project, same as step 2's runtime roles — not something `deploy.sh` or the app
+does at runtime, and easy to miss because the deploy command gives no hint this identity even exists
+separately from the one configured with `--service-account`.
+
+### 4. `FMP_API_KEY` via Secret Manager
 
 Per [Environment variables](#environment-variables), this is the one non-ADC credential in the
 app — worth keeping out of plain `--set-env-vars` (which shows up in `gcloud run services

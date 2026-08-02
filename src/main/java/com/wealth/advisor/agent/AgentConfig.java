@@ -2,7 +2,15 @@ package com.wealth.advisor.agent;
 
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.SequentialAgent;
+import com.google.adk.apps.App;
+import com.google.adk.models.Gemini;
+import com.google.adk.runner.Runner;
+import com.google.adk.sessions.FirestoreSessionService;
+import com.google.adk.summarizer.EventsCompactionConfig;
+import com.google.adk.summarizer.LlmEventSummarizer;
 import com.google.adk.tools.FunctionTool;
+import com.google.cloud.firestore.Firestore;
+import com.google.genai.Client;
 import com.wealth.advisor.agent.tool.PortfolioAllocationTool;
 import com.wealth.advisor.agent.tool.PortfolioHoldingsTool;
 import com.wealth.advisor.agent.tool.PortfolioSearchTool;
@@ -32,6 +40,8 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class AgentConfig {
 
+	private static final String MODEL_NAME = "gemini-2.5-flash";
+
 	/**
 	 * First stage: reads the conversation so far and the user's actual holdings (via {@link
 	 * PortfolioSearchTool}'s RAG search over their uploaded PDF), and produces a short analysis for
@@ -50,7 +60,7 @@ public class AgentConfig {
 				.description(
 						"Analyzes the user's holdings, risk exposure, and any stock mentioned in their"
 								+ " question.")
-				.model("gemini-2.5-flash")
+				.model(MODEL_NAME)
 				.instruction(
 						"""
 						You are a portfolio analyst. Use these tools as needed:
@@ -122,7 +132,7 @@ public class AgentConfig {
 		return LlmAgent.builder()
 				.name("stock_recommendation")
 				.description("Turns a portfolio analysis into a balanced recommendation with risk warnings.")
-				.model("gemini-2.5-flash")
+				.model(MODEL_NAME)
 				.instruction(
 						"""
 						You are a direct, opinionated financial analyst talking to the user. The user
@@ -161,5 +171,88 @@ public class AgentConfig {
 				.description("Portfolio analysis followed by a balanced stock recommendation.")
 				.subAgents(portfolioAnalysisAgent, stockRecommendationAgent)
 				.build();
+	}
+
+	/**
+	 * {@link AgentChatService} needs each stage's name (to attribute BigQuery audit rows and to
+	 * find agent 1's hand-off text among a turn's events), but shouldn't have to know that stage 1
+	 * is "whichever agent is at index 0" of {@code wealthAdvisorPipeline}'s sub-agent list — that's
+	 * an implementation detail of how the pipeline happens to be built, not something a consumer
+	 * should reverse-engineer. Exposing each name as its own bean, wired directly off the named
+	 * agent bean it actually belongs to, makes the association explicit instead of positional.
+	 */
+	@Bean
+	public String agent1Name(LlmAgent portfolioAnalysisAgent) {
+		return portfolioAnalysisAgent.name();
+	}
+
+	@Bean
+	public String agent2Name(LlmAgent stockRecommendationAgent) {
+		return stockRecommendationAgent.name();
+	}
+
+	/**
+	 * Every turn's context is rebuilt from scratch by resending the <em>entire</em> session event
+	 * history (verified directly from ADK's own {@code Contents} request processor, not assumed) —
+	 * and this app's session never resets (one continuous conversation per user, forever; see
+	 * {@link AgentChatService}). Left alone, that means unbounded per-turn cost/latency growth and,
+	 * eventually, hitting {@code gemini-2.5-flash}'s 1,048,576-token context window. See {@code
+	 * Optimization.md} P1-1.
+	 *
+	 * <p>ADK ships a fix for exactly this: tail-retention event compaction. Once a turn's prompt
+	 * token count exceeds {@link #COMPACTION_TOKEN_THRESHOLD}, everything older than the most recent
+	 * {@link #COMPACTION_EVENT_RETENTION_SIZE} events gets summarized by an LLM call into one rolling
+	 * synthetic event, and <em>that</em> gets resent instead of the raw history it replaces — see
+	 * {@code com.google.adk.summarizer.TailRetentionEventCompactor} for the exact algorithm (a rolling
+	 * summary: each new compaction re-covers everything the previous one did, plus what's new since).
+	 *
+	 * <p><strong>Gotcha found reading ADK's own source, not documented anywhere</strong>: if no
+	 * {@code summarizer} is supplied, {@code Runner} tries to build a default one from the root
+	 * agent's own model — but that only works when the root agent is an {@link LlmAgent} directly.
+	 * This app's root agent is {@link SequentialAgent} (a {@code SequentialAgent} has no model of its
+	 * own), so relying on that default throws {@code IllegalArgumentException: "No BaseLlm model
+	 * available for event compaction"} at startup. Worked around by constructing the summarizer's
+	 * {@code Gemini} model explicitly, reusing the same {@code genAiClient} bean already used
+	 * elsewhere for embeddings — no new credential, same ADC path as everything else.
+	 *
+	 * <p>Threshold/retention values are a reasonable starting point, not a measured optimum — 50,000
+	 * tokens is generous headroom below the 1M context window while still well above a typical
+	 * single turn's usage, and retaining the last 20 raw events keeps roughly the last several turns
+	 * fully verbatim (recency detail matters more than compression there) while summarizing anything
+	 * older. Revisit both against real {@code agent_audit_log.agent1_prompt_tokens}/
+	 * {@code agent2_prompt_tokens} distributions once there's real usage to tune against (see
+	 * {@code Optimization.md} P2-1).
+	 */
+	private static final int COMPACTION_TOKEN_THRESHOLD = 50_000;
+
+	private static final int COMPACTION_EVENT_RETENTION_SIZE = 20;
+
+	/**
+	 * Ties {@link #wealthAdvisorPipeline} to a Firestore-backed session store and to compaction
+	 * (see the constants above) — the object {@link AgentChatService} actually calls per turn. Kept
+	 * here rather than built inline in {@code AgentChatService}'s constructor so every ADK object
+	 * this app builds (both agents, the pipeline, and the runner) is assembled in one place, the same
+	 * way every other Spring bean in this app is.
+	 *
+	 * <p>Building via {@code App} rather than {@code Runner.builder().agent(...)} directly is what
+	 * compaction requires — {@code EventsCompactionConfig} only has a home on {@code App}, not on
+	 * {@code Runner.Builder} itself (verified in ADK's source: {@code Runner.Builder.build()} throws
+	 * if both {@code .agent(...)} and {@code .app(...)} are set, so this app had to switch to the
+	 * {@code .app(...)} path entirely rather than adding compaction alongside the old one).
+	 */
+	@Bean
+	public Runner runner(SequentialAgent wealthAdvisorPipeline, Firestore firestore, Client genAiClient) {
+		App app =
+				App.builder()
+						.name(wealthAdvisorPipeline.name())
+						.rootAgent(wealthAdvisorPipeline)
+						.eventsCompactionConfig(
+								EventsCompactionConfig.builder()
+										.summarizer(new LlmEventSummarizer(new Gemini(MODEL_NAME, genAiClient)))
+										.tokenThreshold(COMPACTION_TOKEN_THRESHOLD)
+										.eventRetentionSize(COMPACTION_EVENT_RETENTION_SIZE)
+										.build())
+						.build();
+		return Runner.builder().app(app).sessionService(new FirestoreSessionService(firestore)).build();
 	}
 }
