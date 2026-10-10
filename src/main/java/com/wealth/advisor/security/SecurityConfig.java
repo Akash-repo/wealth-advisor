@@ -2,12 +2,20 @@ package com.wealth.advisor.security;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.DelegatingAuthenticationEntryPoint;
+import org.springframework.security.web.authentication.HttpStatusEntryPoint;
+import org.springframework.security.web.authentication.LoginUrlAuthenticationEntryPoint;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.security.web.util.matcher.RequestMatcher;
+import org.springframework.security.web.util.matcher.RequestMatcherEntry;
 
 /**
  * FR-1: form login + HttpOnly {@code JSESSIONID} cookie, per-request authentication check on
@@ -20,7 +28,13 @@ import org.springframework.security.web.SecurityFilterChain;
  *   <li>Unauthenticated request to anything except {@code /login.html}, {@code /signup.html},
  *       {@code /api/auth/login}, {@code /api/auth/register}, or the static {@code /css/**}/
  *       {@code /js/**} assets those two pages load → Spring Security redirects to {@code
- *       /login.html}.
+ *       /login.html}, <strong>except</strong> under {@code /api/**}, which gets a plain {@code
+ *       401} instead. Without that split, an expired session hitting {@code fetch('/api/chat',
+ *       ...)} would silently follow the redirect to {@code /login.html} (which itself returns
+ *       {@code 200}) — {@code fetch} reports that as a successful response, so the frontend has no
+ *       way to tell "the server did the thing" from "the server sent me the login page back."
+ *       Found live: an uploaded document reported success but never showed up in the documents
+ *       list, because the session had expired between the upload and the list refresh.
  *   <li>New user: browser POSTs JSON to {@code /api/auth/register} ({@code signup.html}'s fetch
  *       call) → {@code RegistrationController} creates the Firestore user doc, then the client
  *       redirects to {@code /login.html} to actually authenticate — registering doesn't log you
@@ -75,7 +89,25 @@ public class SecurityConfig {
 										.loginProcessingUrl("/api/auth/login")
 										.defaultSuccessUrl("/index.html", true)
 										.permitAll())
+				.exceptionHandling(ex -> ex.authenticationEntryPoint(apiAware401EntryPoint()))
 				.logout(logout -> logout.logoutUrl("/api/auth/logout").deleteCookies("JSESSIONID"));
 		return http.build();
+	}
+
+	/**
+	 * {@code defaultAuthenticationEntryPointFor(entryPoint, matcher)} turned out not to fall back to
+	 * the form-login redirect the way its name implies — every unauthenticated request, including a
+	 * direct browser visit to {@code /index.html}, came back {@code 401} instead of the expected
+	 * redirect to {@code /login.html} (caught live before this shipped, not assumed from the docs).
+	 * Building the {@link DelegatingAuthenticationEntryPoint} by hand instead, with an explicit
+	 * default, removes the ambiguity: {@code /api/**} gets {@code 401}, anything else falls through
+	 * to the same {@code LoginUrlAuthenticationEntryPoint} {@code formLogin()} would have configured
+	 * on its own.
+	 */
+	private static AuthenticationEntryPoint apiAware401EntryPoint() {
+		RequestMatcher apiRequests = PathPatternRequestMatcher.pathPattern("/api/**");
+		RequestMatcherEntry<AuthenticationEntryPoint> apiEntry =
+				new RequestMatcherEntry<>(apiRequests, new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED));
+		return new DelegatingAuthenticationEntryPoint(new LoginUrlAuthenticationEntryPoint("/login.html"), apiEntry);
 	}
 }
