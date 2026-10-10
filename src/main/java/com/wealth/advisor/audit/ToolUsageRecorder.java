@@ -59,8 +59,9 @@ public class ToolUsageRecorder {
 	// ADK invocationId (== agent_audit_log.user_prompt_id) -> completed rows for that turn so far.
 	private final Map<String, List<Map<String, Object>>> rowsByUserPromptId = new ConcurrentHashMap<>();
 	// Same secondary index AgentAuditRecorder keeps, for the same reason: AgentChatService only
-	// ever knows the userId, never ADK's invocationId directly.
-	private final Map<String, String> invocationIdByUserId = new ConcurrentHashMap<>();
+	// ever knows (userId, sessionId), never ADK's invocationId directly. Keyed per session, not per
+	// user, because one user can have several sessions running at once.
+	private final Map<String, String> invocationIdByTurnKey = new ConcurrentHashMap<>();
 
 	public ToolUsageRecorder(BigQuery bigQuery) {
 		this.bigQuery = bigQuery;
@@ -72,7 +73,7 @@ public class ToolUsageRecorder {
 	/** Registered as an agent's {@code beforeToolCallbackSync}. Never short-circuits the call. */
 	public Optional<Map<String, Object>> beforeTool(
 			InvocationContext invocationContext, BaseTool tool, Map<String, Object> args, ToolContext toolContext) {
-		invocationIdByUserId.put(toolContext.userId(), toolContext.invocationId());
+		invocationIdByTurnKey.put(TurnKey.of(toolContext.userId(), toolContext.sessionId()), toolContext.invocationId());
 		pendingByCallId.put(
 				callId(toolContext),
 				new PendingCall(
@@ -135,10 +136,12 @@ public class ToolUsageRecorder {
 	 * that turn's accumulated tool-call rows to BigQuery in a single batched write, and forget this
 	 * turn's in-memory state. A no-op (no BigQuery call at all) for turns that called no tools.
 	 *
-	 * @param userId not ADK's invocationId itself — see {@link #invocationIdByUserId}
+	 * @param userId with {@code sessionId}, not ADK's invocationId itself — see {@link
+	 *     #invocationIdByTurnKey}
+	 * @param sessionId the session the turn ran in
 	 */
-	public void finalizeTurn(String userId) {
-		String invocationId = invocationIdByUserId.remove(userId);
+	public void finalizeTurn(String userId, String sessionId) {
+		String invocationId = invocationIdByTurnKey.remove(TurnKey.of(userId, sessionId));
 		List<Map<String, Object>> rows = invocationId == null ? null : rowsByUserPromptId.remove(invocationId);
 		if (rows == null || rows.isEmpty()) {
 			return;

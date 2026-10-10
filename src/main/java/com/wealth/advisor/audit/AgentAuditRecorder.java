@@ -58,11 +58,13 @@ public class AgentAuditRecorder {
 
 	// One entry per in-flight user turn, keyed by ADK's invocationId. Removed by finalizeTurn.
 	private final Map<String, TurnAudit> turnsByInvocationId = new ConcurrentHashMap<>();
-	// Secondary index so AgentChatService can finalize a turn knowing only the userId — it never
-	// sees ADK's invocationId directly, and this also means a turn that fails before producing any
-	// events (so there's no Event to read an invocationId back off of) can still be finalized.
-	// This app only runs one turn at a time per user, so userId is an unambiguous lookup key.
-	private final Map<String, String> invocationIdByUserId = new ConcurrentHashMap<>();
+	// Secondary index so AgentChatService can finalize a turn knowing only (userId, sessionId) — it
+	// never sees ADK's invocationId directly, and this also means a turn that fails before
+	// producing any events (so there's no Event to read an invocationId back off of) can still be
+	// finalized. Keyed by TurnKey (userId + sessionId), NOT userId alone: a user can have several
+	// sessions open at once (two tabs), and keying by user would let one session's turn overwrite
+	// another's invocationId. AgentChatService guarantees one in-flight turn per session.
+	private final Map<String, String> invocationIdByTurnKey = new ConcurrentHashMap<>();
 
 	public AgentAuditRecorder(BigQuery bigQuery) {
 		this.bigQuery = bigQuery;
@@ -111,7 +113,7 @@ public class AgentAuditRecorder {
 
 	/** Registered as an agent's {@code beforeModelCallbackSync}. Never overrides the request. */
 	public Optional<LlmResponse> beforeModel(CallbackContext ctx, LlmRequest.Builder requestBuilder) {
-		invocationIdByUserId.put(ctx.userId(), ctx.invocationId());
+		invocationIdByTurnKey.put(TurnKey.of(ctx.userId(), ctx.sessionId()), ctx.invocationId());
 		TurnAudit turn =
 				turnsByInvocationId.computeIfAbsent(
 						ctx.invocationId(),
@@ -156,12 +158,14 @@ public class AgentAuditRecorder {
 	 * Called once by {@code AgentChatService} after a turn finishes (success or failure) to write
 	 * the accumulated row to BigQuery and forget this turn's in-memory state.
 	 *
-	 * @param userId identifies which in-flight turn to finalize (see {@link
-	 *     #invocationIdByUserId}) — not ADK's invocationId itself, which {@code AgentChatService}
+	 * @param userId with {@code sessionId}, identifies which in-flight turn to finalize (see {@link
+	 *     #invocationIdByTurnKey}) — not ADK's invocationId itself, which {@code AgentChatService}
 	 *     never needs to know
+	 * @param sessionId the session the turn ran in
 	 */
 	public void finalizeTurn(
 			String userId,
+			String sessionId,
 			String agent1Name,
 			String agent2Name,
 			String inputToAgent2,
@@ -169,10 +173,13 @@ public class AgentAuditRecorder {
 			long totalLatencyMs,
 			String status,
 			String errorMessage) {
-		String invocationId = invocationIdByUserId.remove(userId);
+		String invocationId = invocationIdByTurnKey.remove(TurnKey.of(userId, sessionId));
 		TurnAudit turn = invocationId == null ? null : turnsByInvocationId.remove(invocationId);
 		if (turn == null) {
-			log.warn("No audit data recorded for userId='{}' — skipping BigQuery write", userId);
+			log.warn(
+					"No audit data recorded for userId='{}' sessionId='{}' — skipping BigQuery write",
+					userId,
+					sessionId);
 			return;
 		}
 

@@ -3,14 +3,21 @@ package com.wealth.advisor.agent;
 import com.google.adk.events.Event;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.FirestoreSessionService;
+import com.google.adk.sessions.GetSessionConfig;
+import com.google.adk.sessions.Session;
 import com.google.adk.sessions.SessionNotFoundException;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import com.wealth.advisor.audit.AgentAuditRecorder;
 import com.wealth.advisor.audit.ToolUsageRecorder;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -30,10 +37,11 @@ import org.springframework.stereotype.Service;
  * List<Event> all = events.toList().blockingGet();  // wait for the whole turn
  * }</pre>
  *
- * <p>Conversation history is persisted in Firestore via {@link FirestoreSessionService} (not
- * in-memory anymore), one session per user, with the session id simply set equal to the user id
- * — this app only ever has one ongoing conversation per user, so there's no need to juggle
- * multiple session ids.
+ * <p>Conversation history is persisted in Firestore via {@link FirestoreSessionService}. A user
+ * can have many sessions (conversations); each is keyed by a server-generated UUID. Ownership is
+ * enforced by ADK's own (app, userId, sessionId) key — a session id from another user simply isn't
+ * found, which we surface as a 404. Sessions created before multi-session support used the user id
+ * as the session id; they still resolve like any other session and show up in the list.
  *
  * <p>{@code Runner}'s built-in {@code RunConfig.autoCreateSession} doesn't actually work with
  * {@code FirestoreSessionService}: {@code Runner.runAsync} only auto-creates a session when the
@@ -64,6 +72,10 @@ public class AgentChatService {
 	private final String agent2Name;
 	private final AgentAuditRecorder agentAuditRecorder;
 	private final ToolUsageRecorder toolUsageRecorder;
+	// (userId, sessionId) pairs with a turn running right now. ADK doesn't serialize turns within
+	// one session, and two interleaved turns would corrupt that session's history and the audit
+	// correlation, so a second concurrent message to the same session is rejected with 409.
+	private final Set<String> inFlight = ConcurrentHashMap.newKeySet();
 
 	public AgentChatService(
 			Runner runner,
@@ -84,17 +96,43 @@ public class AgentChatService {
 	}
 
 	/**
-	 * Runs one turn of conversation for {@code userId} and returns the reply to show the user.
+	 * Runs one turn of conversation and returns the reply to show the user.
 	 *
-	 * @param userId the authenticated user's id; doubles as the ADK session id (see class javadoc)
+	 * @param userId the authenticated user's id
+	 * @param sessionId the conversation to continue, or {@code null}/blank to start a new one
 	 * @param message the user's natural-language message for this turn
-	 * @return the text of the final agent's reply for this turn
+	 * @throws ChatSessionNotFoundException if {@code sessionId} isn't one of this user's sessions
+	 * @throws ChatSessionBusyException if a turn is already running in that session
 	 */
-	public String chat(String userId, String message) {
-		long startedAt = System.currentTimeMillis();
-		ensureSessionExists(userId);
+	public ChatResult chat(String userId, String sessionId, String message) {
+		boolean isNew = sessionId == null || sessionId.isBlank();
+		String sid = isNew ? createSession(userId, titleFrom(message)) : requireOwnedSession(userId, sessionId).id();
 
-		log.debug("Running turn for userId='{}': \"{}\"", userId, message);
+		String key = userId + "/" + sid;
+		if (!inFlight.add(key)) {
+			throw new ChatSessionBusyException(sid);
+		}
+		try {
+			return new ChatResult(sid, runTurn(userId, sid, message));
+		} catch (RuntimeException e) {
+			// A brand-new conversation whose very first turn failed would otherwise linger in the
+			// list as an empty ghost the user never saw a reply in.
+			if (isNew) {
+				try {
+					runner.sessionService().deleteSession(runner.appName(), userId, sid).blockingAwait();
+				} catch (RuntimeException cleanupFailure) {
+					log.warn("Could not clean up empty session '{}' after a failed first turn", sid, cleanupFailure);
+				}
+			}
+			throw e;
+		} finally {
+			inFlight.remove(key);
+		}
+	}
+
+	private String runTurn(String userId, String sessionId, String message) {
+		long startedAt = System.currentTimeMillis();
+		log.debug("Running turn for userId='{}' sessionId='{}': \"{}\"", userId, sessionId, message);
 
 		String reply = "";
 		String inputToAgent2 = "";
@@ -106,7 +144,7 @@ public class AgentChatService {
 			// String reply here rather than a live stream.
 			List<Event> events =
 					runner
-							.runAsync(userId, userId, Content.fromParts(Part.fromText(message)))
+							.runAsync(userId, sessionId, Content.fromParts(Part.fromText(message)))
 							.toList()
 							.blockingGet();
 
@@ -125,36 +163,133 @@ public class AgentChatService {
 		} catch (RuntimeException e) {
 			status = "ERROR";
 			errorMessage = e.getMessage();
-			log.error("Turn failed for userId='{}'", userId, e);
+			log.error("Turn failed for userId='{}' sessionId='{}'", userId, sessionId, e);
 			throw e;
 		} finally {
 			long totalLatencyMs = System.currentTimeMillis() - startedAt;
 			agentAuditRecorder.finalizeTurn(
-					userId, agent1Name, agent2Name, inputToAgent2, reply, totalLatencyMs, status, errorMessage);
-			toolUsageRecorder.finalizeTurn(userId);
+					userId, sessionId, agent1Name, agent2Name, inputToAgent2, reply, totalLatencyMs, status, errorMessage);
+			toolUsageRecorder.finalizeTurn(userId, sessionId);
 			log.info(
-					"Turn complete for userId='{}': {} ms, status={}, replyLength={}",
+					"Turn complete for userId='{}' sessionId='{}': {} ms, status={}, replyLength={}",
 					userId,
+					sessionId,
 					totalLatencyMs,
 					status,
 					reply.length());
 		}
 	}
 
-	private void ensureSessionExists(String userId) {
-		try {
-			runner
-					.sessionService()
-					.getSession(runner.appName(), userId, userId, Optional.empty())
-					.blockingGet();
-			log.debug("Reusing existing Firestore session for userId='{}'", userId);
-		} catch (SessionNotFoundException e) {
-			log.info("No session found for userId='{}' yet — creating one", userId);
-			runner
-					.sessionService()
-					.createSession(runner.appName(), userId, (Map<String, Object>) null, userId)
-					.blockingGet();
+	/**
+	 * The user's conversations, most recently active first. {@code FirestoreSessionService.listSessions}
+	 * deliberately returns every session with <em>empty</em> state and events, so the title (kept in
+	 * session state) needs a per-session {@code getSession}. Bounded to the {@value #MAX_LISTED}
+	 * most recent sessions, and each fetch asks for a single event, to keep that N+1 cheap.
+	 */
+	public List<SessionSummary> listSessions(String userId) {
+		List<Session> recent =
+				runner.sessionService().listSessions(runner.appName(), userId).blockingGet().sessions().stream()
+						.sorted(
+								Comparator.comparing(
+												(Session x) -> x.lastUpdateTime(), Comparator.nullsFirst(Comparator.naturalOrder()))
+										.reversed())
+						.limit(MAX_LISTED)
+						.toList();
+		GetSessionConfig titleOnly = GetSessionConfig.builder().numRecentEvents(1).build();
+		List<SessionSummary> summaries = new ArrayList<>();
+		for (Session s : recent) {
+			String title = "Conversation";
+			try {
+				Session full =
+						runner
+								.sessionService()
+								.getSession(runner.appName(), userId, s.id(), Optional.of(titleOnly))
+								.blockingGet();
+				if (full != null && full.state().get(TITLE_KEY) instanceof String t) {
+					title = t;
+				}
+			} catch (RuntimeException e) {
+				log.debug("Could not load title for session '{}': {}", s.id(), e.toString());
+			}
+			summaries.add(new SessionSummary(s.id(), title, s.lastUpdateTime()));
 		}
+		return summaries;
+	}
+
+	/**
+	 * What to redraw when the user reopens a conversation: their messages and, per turn, only the
+	 * final agent's reply — the intermediate {@code portfolio_analysis} text is internal, same
+	 * rule {@link #runTurn} applies when picking a reply.
+	 */
+	public List<ChatMessage> history(String userId, String sessionId) {
+		Session session = requireOwnedSession(userId, sessionId);
+		List<ChatMessage> messages = new ArrayList<>();
+		boolean lastWasAgentReply = false;
+		for (Event event : session.events()) {
+			String text = textOf(event);
+			if (text.isEmpty()) {
+				continue;
+			}
+			// FirestoreSessionService stores the user's own events with author == userId, not the
+			// literal "user" ADK uses in-memory — accept both.
+			if ("user".equals(event.author()) || userId.equalsIgnoreCase(event.author())) {
+				messages.add(new ChatMessage("user", text));
+				lastWasAgentReply = false;
+			} else if (agent2Name.equals(event.author())) {
+				// A later final-agent event in the same turn supersedes an earlier one.
+				if (lastWasAgentReply) {
+					messages.remove(messages.size() - 1);
+				}
+				messages.add(new ChatMessage("agent", text));
+				lastWasAgentReply = true;
+			}
+		}
+		return messages;
+	}
+
+	public void deleteSession(String userId, String sessionId) {
+		requireOwnedSession(userId, sessionId);
+		runner.sessionService().deleteSession(runner.appName(), userId, sessionId).blockingAwait();
+	}
+
+	private static final String TITLE_KEY = "title";
+	private static final int MAX_TITLE_LENGTH = 60;
+	private static final int MAX_LISTED = 50;
+
+	private String createSession(String userId, String title) {
+		String sessionId = UUID.randomUUID().toString();
+		runner
+				.sessionService()
+				.createSession(runner.appName(), userId, new ConcurrentHashMap<>(Map.of(TITLE_KEY, title)), sessionId)
+				.blockingGet();
+		log.info("Created session '{}' for userId='{}'", sessionId, userId);
+		return sessionId;
+	}
+
+	/**
+	 * Loads the session only if it belongs to {@code userId}. {@code FirestoreSessionService} signals
+	 * "missing" by throwing {@link SessionNotFoundException} while other implementations complete
+	 * empty — both are handled, and both mean "not yours or doesn't exist" (same 404).
+	 */
+	private Session requireOwnedSession(String userId, String sessionId) {
+		try {
+			Session session =
+					runner
+							.sessionService()
+							.getSession(runner.appName(), userId, sessionId, Optional.empty())
+							.blockingGet();
+			if (session == null) {
+				throw new ChatSessionNotFoundException(sessionId);
+			}
+			return session;
+		} catch (SessionNotFoundException e) {
+			throw new ChatSessionNotFoundException(sessionId);
+		}
+	}
+
+	private static String titleFrom(String message) {
+		String oneLine = message.strip().replaceAll("\\s+", " ");
+		return oneLine.length() <= MAX_TITLE_LENGTH ? oneLine : oneLine.substring(0, MAX_TITLE_LENGTH - 1) + "…";
 	}
 
 	/**
