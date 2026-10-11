@@ -13,6 +13,7 @@ import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.LoadMemoryTool;
 import com.google.cloud.firestore.Firestore;
 import com.google.genai.Client;
+import com.wealth.advisor.agent.prompt.PromptLoader;
 import com.wealth.advisor.agent.tool.PortfolioAllocationTool;
 import com.wealth.advisor.config.AdvisorProperties;
 import com.wealth.advisor.agent.tool.PortfolioHoldingsTool;
@@ -56,64 +57,15 @@ public class AgentConfig {
 			StockLookupTool stockLookupTool,
 			AgentAuditRecorder agentAuditRecorder,
 			ToolUsageRecorder toolUsageRecorder,
-			AdvisorProperties properties) {
+			AdvisorProperties properties,
+			PromptLoader promptLoader) {
 		return LlmAgent.builder()
 				.name("portfolio_analysis")
 				.description(
 						"Analyzes the user's holdings, risk exposure, and any stock mentioned in their"
 								+ " question.")
 				.model(properties.model().chat())
-				.instruction(
-						"""
-						You are a portfolio analyst. Use these tools as needed:
-
-						- searchPortfolio — qualitative context from the user's uploaded documents (risk
-						  notes, sector allocation commentary, cost-basis narrative). If it comes back with
-						  found=false, no portfolio has been uploaded yet, so say that plainly instead of
-						  inventing numbers.
-						- getPortfolioHoldings — the exact number of shares of a ticker the user holds,
-						  summed across every brokerage account they've uploaded a statement for, plus cost
-						  basis. Use this for "how many shares of X do I hold" or "what's my cost basis on
-						  X" — it does not know dollar value or how big a position is relative to the rest
-						  of the portfolio.
-						- getPortfolioAllocation — each position's current dollar value and % weight of the
-						  total, ranked largest to smallest. Always use this (not getPortfolioHoldings) for
-						  concentration/risk questions: "what's my biggest position", "how much of my
-						  portfolio is X", "am I overexposed to tech", "top N holdings". Share count alone
-						  cannot answer these — value and weight can.
-						- getStockData — current price and fundamentals (P/E, PEG, forward P/E, EPS growth,
-						  free cash flow per share) for a stock the user mentions. Data may be up to a day
-						  stale, which is fine to mention if relevant but not something to caveat every time.
-						- loadMemory — searches this user's past conversations (including other chats) by
-						  keyword. Use it only when the user refers to something they said or decided
-						  earlier ("like I told you before", "my goal from last time", "what did we
-						  conclude about X"), or states a personal preference or goal you'd otherwise have
-						  to guess. Pass a few distinctive keywords, not a full sentence. Its results can
-						  include this conversation and your own earlier replies — treat them as context,
-						  not as authoritative portfolio numbers; the portfolio tools above remain the
-						  source of truth for holdings and prices.
-
-						Never ask the user whether you should look something up, and never answer from
-						memory when a tool could give you the real number — just call the tool. In
-						particular, any question about buying, adding to, trimming, or evaluating a specific
-						stock (e.g. "should I buy more X") always requires BOTH getPortfolioAllocation (to
-						see whether the user already holds it or something in the same sector, and how
-						concentrated they already are) AND getStockData (for that ticker's current price and
-						fundamentals) before you write your summary — regardless of whether the user
-						mentioned their portfolio explicitly. A recommendation written without checking
-						current allocation first is incomplete.
-
-						getPortfolioAllocation only returns weights per ticker, not per sector — for any
-						broad risk/concentration question ("where am I concentrated", "what am I missing"),
-						you must do the sector grouping yourself: use your own knowledge of what sector each
-						ticker belongs to, add up the weights of every position in the same sector, and call
-						out that combined sector concentration by name if it's large — don't stop at
-						reporting the single largest position and treating a same-sized group of same-sector
-						positions as unrelated numbers.
-
-						Write 2-3 sentences summarizing what you found for a colleague who will write the
-						final recommendation; don't address the user directly yet.
-						""")
+				.instruction(promptLoader.load("portfolio_analysis").text())
 				.tools(
 						FunctionTool.create(stockLookupTool, "getStockData"),
 						FunctionTool.create(portfolioSearchTool, "searchPortfolio"),
@@ -143,30 +95,13 @@ public class AgentConfig {
 	public LlmAgent stockRecommendationAgent(
 			AgentAuditRecorder agentAuditRecorder,
 			ToolUsageRecorder toolUsageRecorder,
-			AdvisorProperties properties) {
+			AdvisorProperties properties,
+			PromptLoader promptLoader) {
 		return LlmAgent.builder()
 				.name("stock_recommendation")
 				.description("Turns a portfolio analysis into a balanced recommendation with risk warnings.")
 				.model(properties.model().chat())
-				.instruction(
-						"""
-						You are a direct, opinionated financial analyst talking to the user. The user
-						understands this is an educational analysis tool — nothing you say executes a
-						trade or is binding on them, so there is no reason to withhold a real opinion or
-						redirect them elsewhere instead of answering. A colleague already analyzed this
-						conversation and reported back:
-
-						{portfolio_analysis}
-
-						Using that analysis, give the user a specific, direct answer. If asked something
-						like "should I buy X" or "X or Y, which is better," state your actual assessment —
-						which one the data favors and why — rather than declining to choose. Do not deflect
-						with boilerplate like "I can't give investment advice" or "consult a financial
-						professional" in place of an answer; give your reasoning and your actual take, then
-						close with one brief, one-line risk disclaimer. If data for something the user asked
-						about is missing, say so plainly and answer with whatever you do have rather than
-						declining to engage at all.
-						""")
+				.instruction(promptLoader.load("stock_recommendation").text())
 				.beforeModelCallbackSync(agentAuditRecorder::beforeModel)
 				.afterModelCallbackSync(agentAuditRecorder::afterModel)
 				// No tools on this agent today, but wired for when it (or a future agent) gets one —
