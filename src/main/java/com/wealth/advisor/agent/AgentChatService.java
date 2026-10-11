@@ -8,6 +8,7 @@ import com.google.adk.sessions.Session;
 import com.google.adk.sessions.SessionNotFoundException;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
+import com.wealth.advisor.config.AdvisorProperties;
 import com.wealth.advisor.audit.AgentAuditRecorder;
 import com.wealth.advisor.audit.ToolUsageRecorder;
 import java.util.ArrayList;
@@ -72,6 +73,8 @@ public class AgentChatService {
 	private final String agent2Name;
 	private final AgentAuditRecorder agentAuditRecorder;
 	private final ToolUsageRecorder toolUsageRecorder;
+	private final int maxTitleLength;
+	private final int maxListed;
 	// (userId, sessionId) pairs with a turn running right now. ADK doesn't serialize turns within
 	// one session, and two interleaved turns would corrupt that session's history and the audit
 	// correlation, so a second concurrent message to the same session is rejected with 409.
@@ -82,7 +85,10 @@ public class AgentChatService {
 			String agent1Name,
 			String agent2Name,
 			AgentAuditRecorder agentAuditRecorder,
-			ToolUsageRecorder toolUsageRecorder) {
+			ToolUsageRecorder toolUsageRecorder,
+			AdvisorProperties properties) {
+		this.maxTitleLength = properties.chat().maxTitleLength();
+		this.maxListed = properties.chat().maxListedSessions();
 		this.runner = runner;
 		this.agent1Name = agent1Name;
 		this.agent2Name = agent2Name;
@@ -183,7 +189,7 @@ public class AgentChatService {
 	/**
 	 * The user's conversations, most recently active first. {@code FirestoreSessionService.listSessions}
 	 * deliberately returns every session with <em>empty</em> state and events, so the title (kept in
-	 * session state) needs a per-session {@code getSession}. Bounded to the {@value #MAX_LISTED}
+	 * session state) needs a per-session {@code getSession}. Bounded to the {@code advisor.chat.max-listed-sessions}
 	 * most recent sessions, and each fetch asks for a single event, to keep that N+1 cheap.
 	 */
 	public List<SessionSummary> listSessions(String userId) {
@@ -193,7 +199,7 @@ public class AgentChatService {
 								Comparator.comparing(
 												(Session x) -> x.lastUpdateTime(), Comparator.nullsFirst(Comparator.naturalOrder()))
 										.reversed())
-						.limit(MAX_LISTED)
+						.limit(maxListed)
 						.toList();
 		GetSessionConfig titleOnly = GetSessionConfig.builder().numRecentEvents(1).build();
 		List<SessionSummary> summaries = new ArrayList<>();
@@ -253,8 +259,6 @@ public class AgentChatService {
 	}
 
 	private static final String TITLE_KEY = "title";
-	private static final int MAX_TITLE_LENGTH = 60;
-	private static final int MAX_LISTED = 50;
 
 	private String createSession(String userId, String title) {
 		String sessionId = UUID.randomUUID().toString();
@@ -287,9 +291,9 @@ public class AgentChatService {
 		}
 	}
 
-	private static String titleFrom(String message) {
+	private String titleFrom(String message) {
 		String oneLine = message.strip().replaceAll("\\s+", " ");
-		return oneLine.length() <= MAX_TITLE_LENGTH ? oneLine : oneLine.substring(0, MAX_TITLE_LENGTH - 1) + "…";
+		return oneLine.length() <= maxTitleLength ? oneLine : oneLine.substring(0, maxTitleLength - 1) + "…";
 	}
 
 	/**

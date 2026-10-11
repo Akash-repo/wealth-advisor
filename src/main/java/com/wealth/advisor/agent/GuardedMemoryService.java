@@ -4,6 +4,7 @@ import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.memory.MemoryEntry;
 import com.google.adk.memory.SearchMemoryResponse;
 import com.google.adk.sessions.Session;
+import com.wealth.advisor.config.AdvisorProperties;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
@@ -25,8 +26,8 @@ import org.slf4j.LoggerFactory;
  *       one optional lookup took down the whole chat with a 500. Memory is a nice-to-have, so an
  *       error here degrades to "no memories found" and is logged.
  *   <li><strong>It is unbounded.</strong> {@code searchMemory} returns every matching event in
- *       every session, unranked, in full. We keep only the {@value #MAX_ENTRIES} most recent and
- *       truncate each text to {@value #MAX_TEXT_CHARS} characters so a broad query can't flood
+ *       every session, unranked, in full. We keep only the {@code advisor.memory.max-entries} most recent and
+ *       truncate each text to {@code advisor.memory.max-text-chars} characters so a broad query can't flood
  *       the model's context.
  * </ul>
  *
@@ -35,15 +36,16 @@ import org.slf4j.LoggerFactory;
  */
 public class GuardedMemoryService implements BaseMemoryService {
 
-	static final int MAX_ENTRIES = 8;
-	static final int MAX_TEXT_CHARS = 500;
-
 	private static final Logger log = LoggerFactory.getLogger(GuardedMemoryService.class);
 
 	private final BaseMemoryService delegate;
+	private final int maxEntries;
+	private final int maxTextChars;
 
-	public GuardedMemoryService(BaseMemoryService delegate) {
+	public GuardedMemoryService(BaseMemoryService delegate, AdvisorProperties.Memory limits) {
 		this.delegate = delegate;
+		this.maxEntries = limits.maxEntries();
+		this.maxTextChars = limits.maxTextChars();
 	}
 
 	@Override
@@ -54,7 +56,7 @@ public class GuardedMemoryService implements BaseMemoryService {
 	@Override
 	public Single<SearchMemoryResponse> searchMemory(String appName, String userId, String query) {
 		return Single.defer(() -> delegate.searchMemory(appName, userId, query))
-				.map(GuardedMemoryService::capped)
+				.map(this::capped)
 				.onErrorReturn(
 						e -> {
 							log.warn("Memory search failed for userId='{}' — continuing without memories: {}", userId, e.toString());
@@ -62,21 +64,21 @@ public class GuardedMemoryService implements BaseMemoryService {
 						});
 	}
 
-	private static SearchMemoryResponse capped(SearchMemoryResponse response) {
+	private SearchMemoryResponse capped(SearchMemoryResponse response) {
 		List<MemoryEntry> kept =
 				response.memories().stream()
 						.sorted(Comparator.comparing(MemoryEntry::timestamp).reversed())
-						.limit(MAX_ENTRIES)
-						.map(GuardedMemoryService::truncated)
+						.limit(maxEntries)
+						.map(this::truncated)
 						.collect(Collectors.toList());
 		return SearchMemoryResponse.builder().setMemories(ImmutableList.copyOf(kept)).build();
 	}
 
-	private static MemoryEntry truncated(MemoryEntry entry) {
+	private MemoryEntry truncated(MemoryEntry entry) {
 		Part[] parts =
 				entry.content().parts().stream()
 						.flatMap(List::stream)
-						.map(p -> p.text().map(t -> Part.fromText(t.length() <= MAX_TEXT_CHARS ? t : t.substring(0, MAX_TEXT_CHARS) + "…")).orElse(p))
+						.map(p -> p.text().map(t -> Part.fromText(t.length() <= maxTextChars ? t : t.substring(0, maxTextChars) + "…")).orElse(p))
 						.toArray(Part[]::new);
 		return MemoryEntry.builder()
 				.author(entry.author())

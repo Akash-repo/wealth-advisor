@@ -2,6 +2,7 @@ package com.wealth.advisor.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.wealth.advisor.config.TestProperties;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -13,24 +14,26 @@ import org.junit.jupiter.api.Test;
  */
 class ChatRateLimiterTest {
 
+  private static final int LIMIT = TestProperties.defaults().chat().maxRequestsPerMinute();
+
   @Test
   void tryAcquire_allowsUpToTheLimitThenRejects() {
-    ChatRateLimiter limiter = new ChatRateLimiter();
+    ChatRateLimiter limiter = new ChatRateLimiter(TestProperties.defaults());
     String userId = "alice";
 
-    for (int i = 0; i < ChatRateLimiter.MAX_REQUESTS_PER_WINDOW; i++) {
+    for (int i = 0; i < LIMIT; i++) {
       assertThat(limiter.tryAcquire(userId)).as("request #%d should be allowed", i + 1).isTrue();
     }
     assertThat(limiter.tryAcquire(userId))
-        .as("request #%d, one past the limit, should be rejected", ChatRateLimiter.MAX_REQUESTS_PER_WINDOW + 1)
+        .as("request #%d, one past the limit, should be rejected", LIMIT + 1)
         .isFalse();
   }
 
   @Test
   void tryAcquire_tracksEachUserIndependently() {
-    ChatRateLimiter limiter = new ChatRateLimiter();
+    ChatRateLimiter limiter = new ChatRateLimiter(TestProperties.defaults());
 
-    for (int i = 0; i < ChatRateLimiter.MAX_REQUESTS_PER_WINDOW; i++) {
+    for (int i = 0; i < LIMIT; i++) {
       assertThat(limiter.tryAcquire("alice")).isTrue();
     }
     assertThat(limiter.tryAcquire("alice")).as("alice is now over her own limit").isFalse();

@@ -14,6 +14,7 @@ import com.google.adk.tools.LoadMemoryTool;
 import com.google.cloud.firestore.Firestore;
 import com.google.genai.Client;
 import com.wealth.advisor.agent.tool.PortfolioAllocationTool;
+import com.wealth.advisor.config.AdvisorProperties;
 import com.wealth.advisor.agent.tool.PortfolioHoldingsTool;
 import com.wealth.advisor.agent.tool.PortfolioSearchTool;
 import com.wealth.advisor.agent.tool.StockLookupTool;
@@ -42,8 +43,6 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class AgentConfig {
 
-	private static final String MODEL_NAME = "gemini-2.5-flash";
-
 	/**
 	 * First stage: reads the conversation so far and the user's actual holdings (via {@link
 	 * PortfolioSearchTool}'s RAG search over their uploaded PDF), and produces a short analysis for
@@ -56,13 +55,14 @@ public class AgentConfig {
 			PortfolioAllocationTool portfolioAllocationTool,
 			StockLookupTool stockLookupTool,
 			AgentAuditRecorder agentAuditRecorder,
-			ToolUsageRecorder toolUsageRecorder) {
+			ToolUsageRecorder toolUsageRecorder,
+			AdvisorProperties properties) {
 		return LlmAgent.builder()
 				.name("portfolio_analysis")
 				.description(
 						"Analyzes the user's holdings, risk exposure, and any stock mentioned in their"
 								+ " question.")
-				.model(MODEL_NAME)
+				.model(properties.model().chat())
 				.instruction(
 						"""
 						You are a portfolio analyst. Use these tools as needed:
@@ -141,11 +141,13 @@ public class AgentConfig {
 	 */
 	@Bean
 	public LlmAgent stockRecommendationAgent(
-			AgentAuditRecorder agentAuditRecorder, ToolUsageRecorder toolUsageRecorder) {
+			AgentAuditRecorder agentAuditRecorder,
+			ToolUsageRecorder toolUsageRecorder,
+			AdvisorProperties properties) {
 		return LlmAgent.builder()
 				.name("stock_recommendation")
 				.description("Turns a portfolio analysis into a balanced recommendation with risk warnings.")
-				.model(MODEL_NAME)
+				.model(properties.model().chat())
 				.instruction(
 						"""
 						You are a direct, opinionated financial analyst talking to the user. The user
@@ -213,8 +215,8 @@ public class AgentConfig {
 	 * Optimization.md} P1-1.
 	 *
 	 * <p>ADK ships a fix for exactly this: tail-retention event compaction. Once a turn's prompt
-	 * token count exceeds {@link #COMPACTION_TOKEN_THRESHOLD}, everything older than the most recent
-	 * {@link #COMPACTION_EVENT_RETENTION_SIZE} events gets summarized by an LLM call into one rolling
+	 * token count exceeds {@code advisor.compaction.token-threshold}, everything older than the most recent
+	 * {@code advisor.compaction.event-retention-size} events gets summarized by an LLM call into one rolling
 	 * synthetic event, and <em>that</em> gets resent instead of the raw history it replaces — see
 	 * {@code com.google.adk.summarizer.TailRetentionEventCompactor} for the exact algorithm (a rolling
 	 * summary: each new compaction re-covers everything the previous one did, plus what's new since).
@@ -236,10 +238,6 @@ public class AgentConfig {
 	 * {@code agent2_prompt_tokens} distributions once there's real usage to tune against (see
 	 * {@code Optimization.md} P2-1).
 	 */
-	private static final int COMPACTION_TOKEN_THRESHOLD = 50_000;
-
-	private static final int COMPACTION_EVENT_RETENTION_SIZE = 20;
-
 	/**
 	 * Ties {@link #wealthAdvisorPipeline} to a Firestore-backed session store and to compaction
 	 * (see the constants above) — the object {@link AgentChatService} actually calls per turn. Kept
@@ -254,16 +252,20 @@ public class AgentConfig {
 	 * {@code .app(...)} path entirely rather than adding compaction alongside the old one).
 	 */
 	@Bean
-	public Runner runner(SequentialAgent wealthAdvisorPipeline, Firestore firestore, Client genAiClient) {
+	public Runner runner(
+			SequentialAgent wealthAdvisorPipeline,
+			Firestore firestore,
+			Client genAiClient,
+			AdvisorProperties properties) {
 		App app =
 				App.builder()
 						.name(wealthAdvisorPipeline.name())
 						.rootAgent(wealthAdvisorPipeline)
 						.eventsCompactionConfig(
 								EventsCompactionConfig.builder()
-										.summarizer(new LlmEventSummarizer(new Gemini(MODEL_NAME, genAiClient)))
-										.tokenThreshold(COMPACTION_TOKEN_THRESHOLD)
-										.eventRetentionSize(COMPACTION_EVENT_RETENTION_SIZE)
+										.summarizer(new LlmEventSummarizer(new Gemini(properties.model().chat(), genAiClient)))
+										.tokenThreshold(properties.compaction().tokenThreshold())
+										.eventRetentionSize(properties.compaction().eventRetentionSize())
 										.build())
 						.build();
 		return Runner.builder()
@@ -275,7 +277,7 @@ public class AgentConfig {
 				// every appended event, so there's no separate "ingest" step. Wrapped in
 				// GuardedMemoryService because the raw one throws on backend errors (failing the whole
 				// turn) and returns unbounded results. See ARCHITECTURE.md.
-				.memoryService(new GuardedMemoryService(new FirestoreMemoryService(firestore)))
+				.memoryService(new GuardedMemoryService(new FirestoreMemoryService(firestore), properties.memory()))
 				.build();
 	}
 }

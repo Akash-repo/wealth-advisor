@@ -3,6 +3,7 @@ package com.wealth.advisor.portfolio;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.genai.Client;
+import com.wealth.advisor.config.AdvisorProperties;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.Schema;
@@ -31,12 +32,13 @@ import org.springframework.stereotype.Component;
 public class HoldingsExtractionService {
 
 	private static final Logger log = LoggerFactory.getLogger(HoldingsExtractionService.class);
-	private static final String MODEL = "gemini-2.5-flash";
 
 	private final Client genAiClient;
+	private final String model;
 	private final ObjectMapper objectMapper = new ObjectMapper();
 
-	public HoldingsExtractionService(Client genAiClient) {
+	public HoldingsExtractionService(Client genAiClient, AdvisorProperties properties) {
+		this.model = properties.model().extraction();
 		this.genAiClient = genAiClient;
 	}
 
@@ -67,7 +69,7 @@ public class HoldingsExtractionService {
 					"""
 							+ documentText;
 
-			GenerateContentResponse response = genAiClient.models.generateContent(MODEL, prompt, config);
+			GenerateContentResponse response = genAiClient.models.generateContent(model, prompt, config);
 			List<Map<String, Object>> holdings =
 					objectMapper.readValue(response.text(), new TypeReference<>() {});
 			log.debug("Extracted {} holding(s) from document text", holdings.size());

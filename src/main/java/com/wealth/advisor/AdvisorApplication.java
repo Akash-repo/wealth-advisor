@@ -2,6 +2,7 @@ package com.wealth.advisor;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 
 /**
  * Wealth Advisor — a small, Google ADK-based multi-agent financial advisor, built to learn
@@ -24,6 +25,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * </ul>
  */
 @SpringBootApplication
+@ConfigurationPropertiesScan
 public class AdvisorApplication {
 
 	public static void main(String[] args) {

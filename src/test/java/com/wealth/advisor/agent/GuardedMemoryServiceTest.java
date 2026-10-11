@@ -7,6 +7,7 @@ import com.google.adk.memory.MemoryEntry;
 import com.google.adk.memory.SearchMemoryResponse;
 import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
+import com.wealth.advisor.config.TestProperties;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Completable;
@@ -16,6 +17,8 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class GuardedMemoryServiceTest {
+
+	private static final com.wealth.advisor.config.AdvisorProperties.Memory LIMITS = TestProperties.defaults().memory();
 
 	private static BaseMemoryService stub(Single<SearchMemoryResponse> result) {
 		return new BaseMemoryService() {
@@ -35,7 +38,7 @@ class GuardedMemoryServiceTest {
 
 	@Test
 	void backendError_degradesToNoMemories() {
-		var guarded = new GuardedMemoryService(stub(Single.error(new RuntimeException("FAILED_PRECONDITION: needs an index"))));
+		var guarded = new GuardedMemoryService(stub(Single.error(new RuntimeException("FAILED_PRECONDITION: needs an index"))), LIMITS);
 
 		SearchMemoryResponse response = guarded.searchMemory("app", "alice", "goal").blockingGet();
 
@@ -48,13 +51,13 @@ class GuardedMemoryServiceTest {
 		for (int i = 0; i < 20; i++) {
 			many.add(entry("x".repeat(2000), String.format("2026-01-%02dT00:00:00Z", i + 1)));
 		}
-		var guarded = new GuardedMemoryService(stub(Single.just(SearchMemoryResponse.builder().setMemories(ImmutableList.copyOf(many)).build())));
+		var guarded = new GuardedMemoryService(stub(Single.just(SearchMemoryResponse.builder().setMemories(ImmutableList.copyOf(many)).build())), LIMITS);
 
 		var memories = guarded.searchMemory("app", "alice", "x").blockingGet().memories();
 
-		assertThat(memories).hasSize(GuardedMemoryService.MAX_ENTRIES);
+		assertThat(memories).hasSize(LIMITS.maxEntries());
 		assertThat(memories.get(0).timestamp()).isEqualTo("2026-01-20T00:00:00Z");
 		String text = memories.get(0).content().parts().get().get(0).text().get();
-		assertThat(text.length()).isEqualTo(GuardedMemoryService.MAX_TEXT_CHARS + 1);
+		assertThat(text.length()).isEqualTo(LIMITS.maxTextChars() + 1);
 	}
 }

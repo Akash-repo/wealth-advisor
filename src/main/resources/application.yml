@@ -36,3 +36,22 @@ logging:
     # invocations, session lookups, embedding calls, etc.) — useful alongside stepping through
     # breakpoints in a debugger. Doesn't affect ADK/Firestore/Spring's own logging verbosity.
     com.wealth.advisor: DEBUG
+
+# Tunables bound to AdvisorProperties. This file is the single source of truth: there are no
+# defaults in code, and a missing or non-positive value fails startup. Override per environment
+# with relaxed-binding env vars, e.g. ADVISOR_COMPACTION_TOKENTHRESHOLD.
+advisor:
+  model:
+    chat: gemini-2.5-flash
+    extraction: gemini-2.5-flash
+    embedding: text-embedding-004
+  chat:
+    max-requests-per-minute: 20
+    max-listed-sessions: 50
+    max-title-length: 60
+  compaction:
+    token-threshold: 50000
+    event-retention-size: 20
+  memory:
+    max-entries: 8
+    max-text-chars: 500

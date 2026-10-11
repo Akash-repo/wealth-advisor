@@ -1,6 +1,7 @@
 package com.wealth.advisor.portfolio;
 
 import com.google.genai.Client;
+import com.wealth.advisor.config.AdvisorProperties;
 import com.google.genai.types.ContentEmbedding;
 import com.google.genai.types.EmbedContentConfig;
 import com.google.genai.types.EmbedContentResponse;
@@ -33,11 +34,12 @@ import org.springframework.stereotype.Component;
 public class EmbeddingService {
 
 	private static final Logger log = LoggerFactory.getLogger(EmbeddingService.class);
-	private static final String MODEL = "text-embedding-004";
 
 	private final Client genAiClient;
+	private final String model;
 
-	public EmbeddingService(Client genAiClient) {
+	public EmbeddingService(Client genAiClient, AdvisorProperties properties) {
+		this.model = properties.model().embedding();
 		this.genAiClient = genAiClient;
 	}
 
@@ -48,7 +50,7 @@ public class EmbeddingService {
 	 */
 	public double[] embed(String text) {
 		EmbedContentResponse response =
-				genAiClient.models.embedContent(MODEL, text, EmbedContentConfig.builder().build());
+				genAiClient.models.embedContent(model, text, EmbedContentConfig.builder().build());
 		List<Float> values =
 				response
 						.embeddings()
