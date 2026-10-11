@@ -103,10 +103,18 @@ Decisions confirmed 2026-10-11: prompts as resource files, repository layer late
 | Constants classes (`constants/`) | **Done** — `3fe0cb6` |
 | Prompts as resource files (`resources/prompts/`, `PromptLoader`, versioned by hash) | **Done** — `8f22b93` |
 | Config classes into one `config/` package; runner split out as `RunnerConfig` | **Done** — `3b62dc8` |
-| Util extraction (ADK text helper, one `ObjectMapper`) | Confirmed, **not started** (step 3) |
+| Util extraction (`util/AdkContentText`, one shared `ObjectMapper`) | **Done** — `7c71cbe` |
 | Service split (`ChatService` / `ChatSessionService`), `dto/` + `exception/` packages, `@RestControllerAdvice` | Confirmed, **not started** (step 4) |
 | Repository layer | Later — when Topic 5 (analytics tables) needs it |
 | ArchUnit dependency rules | Proposed, not confirmed |
+
+### Correction recorded during step 3
+
+The earlier plan said to "inject Spring's `ObjectMapper`". On Spring Boot 4.1 Spring's JSON stack is
+Jackson 3 (`tools.jackson`), a different type from the Jackson 2 (`com.fasterxml`) that ADK and our
+audit/market-data/holdings classes use, so there is no Spring-provided Jackson 2 mapper to inject.
+`config/JacksonConfig` therefore defines one shared Jackson 2 bean instead. Migrating those classes
+to Jackson 3 is possible but is a separate, larger change and was not needed.
 
 ### Deliberately left as constants
 
