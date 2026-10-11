@@ -52,7 +52,7 @@ public class ToolUsageRecorder {
 	private static final Logger log = LoggerFactory.getLogger(ToolUsageRecorder.class);
 
 	private final BigQuery bigQuery;
-	private final ObjectMapper objectMapper = new ObjectMapper();
+	private final ObjectMapper objectMapper;
 
 	// functionCallId -> the call's start time + what to log once it finishes. Keyed globally
 	// (not per-turn) since a functionCallId is already unique across the whole app.
@@ -64,8 +64,9 @@ public class ToolUsageRecorder {
 	// user, because one user can have several sessions running at once.
 	private final Map<String, String> invocationIdByTurnKey = new ConcurrentHashMap<>();
 
-	public ToolUsageRecorder(BigQuery bigQuery) {
+	public ToolUsageRecorder(BigQuery bigQuery, ObjectMapper objectMapper) {
 		this.bigQuery = bigQuery;
+		this.objectMapper = objectMapper;
 	}
 
 	private record PendingCall(

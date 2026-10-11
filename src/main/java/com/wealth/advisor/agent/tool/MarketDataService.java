@@ -62,11 +62,16 @@ public class MarketDataService {
 
 	private final Firestore firestore;
 	private final HttpClient httpClient = HttpClient.newHttpClient();
-	private final ObjectMapper objectMapper = new ObjectMapper();
+	private final ObjectMapper objectMapper;
 	private final String apiKey;
 	private final ContentSanitizer contentSanitizer;
 
-	public MarketDataService(Firestore firestore, @Value("${fmp.api-key:}") String apiKey, ContentSanitizer contentSanitizer) {
+	public MarketDataService(
+			Firestore firestore,
+			@Value("${fmp.api-key:}") String apiKey,
+			ContentSanitizer contentSanitizer,
+			ObjectMapper objectMapper) {
+		this.objectMapper = objectMapper;
 		this.firestore = firestore;
 		this.apiKey = apiKey;
 		this.contentSanitizer = contentSanitizer;

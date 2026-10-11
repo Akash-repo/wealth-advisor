@@ -1,6 +1,7 @@
 package com.wealth.advisor.audit;
 
 import com.wealth.advisor.constants.BigQueryNames;
+import com.wealth.advisor.util.AdkContentText;
 import com.fasterxml.jackson.annotation.JsonRawValue;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.agents.CallbackContext;
@@ -10,7 +11,6 @@ import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.InsertAllRequest;
 import com.google.cloud.bigquery.InsertAllResponse;
 import com.google.cloud.bigquery.TableId;
-import com.google.genai.types.Content;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -55,7 +55,7 @@ public class AgentAuditRecorder {
 	private static final Logger log = LoggerFactory.getLogger(AgentAuditRecorder.class);
 
 	private final BigQuery bigQuery;
-	private final ObjectMapper objectMapper = new ObjectMapper();
+	private final ObjectMapper objectMapper;
 
 	// One entry per in-flight user turn, keyed by ADK's invocationId. Removed by finalizeTurn.
 	private final Map<String, TurnAudit> turnsByInvocationId = new ConcurrentHashMap<>();
@@ -67,8 +67,9 @@ public class AgentAuditRecorder {
 	// another's invocationId. AgentChatService guarantees one in-flight turn per session.
 	private final Map<String, String> invocationIdByTurnKey = new ConcurrentHashMap<>();
 
-	public AgentAuditRecorder(BigQuery bigQuery) {
+	public AgentAuditRecorder(BigQuery bigQuery, ObjectMapper objectMapper) {
 		this.bigQuery = bigQuery;
+		this.objectMapper = objectMapper;
 	}
 
 	/** One accumulating record per user turn, built up across both agents' model calls. */
@@ -120,7 +121,7 @@ public class AgentAuditRecorder {
 						ctx.invocationId(),
 						id ->
 								new TurnAudit(
-										ctx.userId(), ctx.sessionId(), extractText(ctx.userContent().orElse(null))));
+										ctx.userId(), ctx.sessionId(), AdkContentText.textOf(ctx.userContent().orElse(null))));
 		turn.pendingByAgent.put(ctx.agentName(), new PendingRoundTrip(requestBuilder.build().toJson()));
 		return Optional.empty();
 	}
@@ -250,14 +251,5 @@ public class AgentAuditRecorder {
 			log.error("Failed to serialize LLM call list to JSON", e);
 			return "[]";
 		}
-	}
-
-	private static String extractText(Content content) {
-		if (content == null) {
-			return "";
-		}
-		StringBuilder text = new StringBuilder();
-		content.parts().ifPresent(parts -> parts.forEach(part -> part.text().ifPresent(text::append)));
-		return text.toString();
 	}
 }

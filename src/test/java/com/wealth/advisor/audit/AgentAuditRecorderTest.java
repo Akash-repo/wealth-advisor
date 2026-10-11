@@ -39,7 +39,7 @@ class AgentAuditRecorderTest {
 		InsertAllResponse ok = mock(InsertAllResponse.class);
 		when(ok.hasErrors()).thenReturn(false);
 		when(bigQuery.insertAll(any(InsertAllRequest.class))).thenReturn(ok);
-		AgentAuditRecorder recorder = new AgentAuditRecorder(bigQuery);
+		AgentAuditRecorder recorder = new AgentAuditRecorder(bigQuery, new com.fasterxml.jackson.databind.ObjectMapper());
 
 		recorder.beforeModel(ctx("alice", "session-A", "inv-A"), LlmRequest.builder());
 		recorder.beforeModel(ctx("alice", "session-B", "inv-B"), LlmRequest.builder());

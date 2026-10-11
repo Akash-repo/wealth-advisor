@@ -35,10 +35,11 @@ public class HoldingsExtractionService {
 
 	private final Client genAiClient;
 	private final String model;
-	private final ObjectMapper objectMapper = new ObjectMapper();
+	private final ObjectMapper objectMapper;
 
-	public HoldingsExtractionService(Client genAiClient, AdvisorProperties properties) {
+	public HoldingsExtractionService(Client genAiClient, AdvisorProperties properties, ObjectMapper objectMapper) {
 		this.model = properties.model().extraction();
+		this.objectMapper = objectMapper;
 		this.genAiClient = genAiClient;
 	}
 

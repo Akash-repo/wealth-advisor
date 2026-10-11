@@ -1,6 +1,7 @@
 package com.wealth.advisor.agent;
 
 import com.wealth.advisor.constants.SessionStateKeys;
+import com.wealth.advisor.util.AdkContentText;
 import com.google.adk.events.Event;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.FirestoreSessionService;
@@ -233,7 +234,7 @@ public class AgentChatService {
 		List<ChatMessage> messages = new ArrayList<>();
 		boolean lastWasAgentReply = false;
 		for (Event event : session.events()) {
-			String text = textOf(event);
+			String text = AdkContentText.textOf(event);
 			if (text.isEmpty()) {
 				continue;
 			}
@@ -306,7 +307,7 @@ public class AgentChatService {
 			if (authorFilter != null && !authorFilter.equals(event.author())) {
 				continue;
 			}
-			String text = textOf(event);
+			String text = AdkContentText.textOf(event);
 			if (!text.isEmpty()) {
 				return text;
 			}
@@ -314,12 +315,4 @@ public class AgentChatService {
 		return "";
 	}
 
-	private static String textOf(Event event) {
-		StringBuilder text = new StringBuilder();
-		event.content().flatMap(Content::parts).stream()
-				.flatMap(List::stream)
-				.flatMap(part -> part.text().stream())
-				.forEach(text::append);
-		return text.toString();
-	}
 }
