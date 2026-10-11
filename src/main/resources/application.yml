@@ -1,0 +1,38 @@
+spring:
+  application:
+    name: advisor
+
+server:
+  # Cloud Run injects PORT and health-checks whatever port that is; falls back to the same 8080
+  # as before when PORT is unset (i.e. every local run).
+  port: ${PORT:8080}
+  servlet:
+    session:
+      cookie:
+        # Mitigates CSRF for this same-origin app without needing CSRF tokens; see SecurityConfig.
+        same-site: lax
+
+gcp:
+  # GCP project used for the Firestore client (see FirestoreConfig). Any placeholder value works
+  # when pointed at the Firestore emulator (FIRESTORE_EMULATOR_HOST) instead of real Firestore.
+  project-id: ${GCP_PROJECT_ID:wealth-agent-local}
+
+wealth:
+  # Seeded by DemoUserSeeder on startup so there's a user to log in with. Override before using
+  # this beyond local dev.
+  demo-user:
+    username: ${DEMO_USER_USERNAME:demo}
+    password: ${DEMO_USER_PASSWORD:changeme}
+
+fmp:
+  # Financial Modeling Prep API key for MarketDataService — free tier, get one at
+  # financialmodelingprep.com. Never committed; if unset, stock lookups degrade to
+  # found=false rather than failing the whole chat turn (see MarketDataService).
+  api-key: ${FMP_API_KEY:}
+
+logging:
+  level:
+    # Surfaces the DEBUG-level log.debug(...) calls added across this app's own classes (tool
+    # invocations, session lookups, embedding calls, etc.) — useful alongside stepping through
+    # breakpoints in a debugger. Doesn't affect ADK/Firestore/Spring's own logging verbosity.
+    com.wealth.advisor: DEBUG
