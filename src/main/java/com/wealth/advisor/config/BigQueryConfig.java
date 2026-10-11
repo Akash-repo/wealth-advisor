@@ -1,4 +1,4 @@
-package com.wealth.advisor.infra;
+package com.wealth.advisor.config;
 
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryOptions;

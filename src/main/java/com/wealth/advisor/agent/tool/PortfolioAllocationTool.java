@@ -38,7 +38,7 @@ import org.springframework.stereotype.Component;
  * MarketDataService} itself already uses for its 4 FMP endpoints, for the same reason: a handful
  * of sequential blocking price lookups would otherwise sum their latency instead of overlapping
  * it. Dispatched on the dedicated {@code priceLookupExecutor} bean ({@link
- * com.wealth.advisor.infra.ExecutorConfig}) rather than the JVM-wide {@code
+ * com.wealth.advisor.config.ExecutorConfig}) rather than the JVM-wide {@code
  * ForkJoinPool.commonPool()} {@code CompletableFuture.supplyAsync(...)} would otherwise silently
  * use — see that class's javadoc and {@code Optimization.md} P1-5 for why that mattered here
  * specifically (each task blocks on real network I/O, and the common pool's default parallelism is

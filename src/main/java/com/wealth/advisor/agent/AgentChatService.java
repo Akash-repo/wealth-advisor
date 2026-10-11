@@ -60,7 +60,7 @@ import org.springframework.stereotype.Service;
  * written; for {@code AgentAuditRecorder} that also attaches the per-agent hand-off ({@code
  * input_to_agent2}) and final reply to the same row.
  *
- * @see AgentConfig for how the {@code SequentialAgent} pipeline, the {@link Runner} bean, and the
+ * @see com.wealth.advisor.config.AgentConfig for how the {@code SequentialAgent} pipeline, the {@link Runner} bean, and the
  *     {@code agent1Name}/{@code agent2Name} beans this class is handed are all assembled — every
  *     ADK object this app builds lives there, this class only consumes the finished results
  */

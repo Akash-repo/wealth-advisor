@@ -161,7 +161,7 @@ commonPool thread on the whole synchronous call.
   before real concurrent traffic.
 
 **Fix applied:** the first option, with a virtual-thread twist. `ExecutorConfig`
-(`infra/ExecutorConfig.java`) exposes a `priceLookupExecutor` `@Bean` —
+(`config/ExecutorConfig.java`) exposes a `priceLookupExecutor` `@Bean` —
 `Executors.newVirtualThreadPerTaskExecutor()` — and `PortfolioAllocationTool` now passes it
 explicitly as the second argument to `CompletableFuture.supplyAsync(..., priceLookupExecutor)`
 instead of relying on the commonPool default. Chose virtual threads over a fixed-size platform-

@@ -25,7 +25,7 @@ import org.springframework.web.server.ResponseStatusException;
  * Entry point for talking to the portfolio advisor agent.
  *
  * <p>{@code userId} is taken from the authenticated {@link Authentication} principal (set by
- * {@link com.wealth.advisor.security.SecurityConfig}'s form login) rather than trusting a
+ * {@link com.wealth.advisor.config.SecurityConfig}'s form login) rather than trusting a
  * client-supplied id. A user owns many conversations (ADK sessions); the client names one by
  * {@code sessionId}, but ADK keys sessions by (user, session), so another user's id is just a 404
  * — that's the multi-tenant isolation (FR-1). See {@link AgentChatService#chat} for what actually

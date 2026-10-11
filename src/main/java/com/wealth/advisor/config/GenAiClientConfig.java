@@ -1,4 +1,4 @@
-package com.wealth.advisor.infra;
+package com.wealth.advisor.config;
 
 import com.google.genai.Client;
 import org.springframework.context.annotation.Bean;

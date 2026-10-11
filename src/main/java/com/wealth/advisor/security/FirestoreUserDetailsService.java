@@ -1,5 +1,6 @@
 package com.wealth.advisor.security;
 
+import com.wealth.advisor.config.SecurityConfig;
 import com.wealth.advisor.constants.FirestoreCollections;
 import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;

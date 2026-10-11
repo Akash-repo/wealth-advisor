@@ -1,4 +1,4 @@
-package com.wealth.advisor.security;
+package com.wealth.advisor.config;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;

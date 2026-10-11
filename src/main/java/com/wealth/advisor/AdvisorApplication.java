@@ -15,8 +15,12 @@ import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
  * points once you're in the code:
  *
  * <ul>
- *   <li>{@code com.wealth.advisor.agent} — the ADK agents themselves ({@code AgentConfig}) and
- *       the service that runs a turn ({@code AgentChatService}).
+ *   <li>{@code com.wealth.advisor.config} — every {@code @Configuration}: the agents ({@code
+ *       AgentConfig}), the runner and its session/memory/compaction setup ({@code RunnerConfig}),
+ *       the typed tunables bound from {@code application.yml} ({@code AdvisorProperties}), and the
+ *       GCP clients.
+ *   <li>{@code com.wealth.advisor.agent} — the service that runs a turn ({@code
+ *       AgentChatService}), the memory guard, and the prompt loader.
  *   <li>{@code com.wealth.advisor.agent.tool} — the two tools those agents can call.
  *   <li>{@code com.wealth.advisor.portfolio} — PDF parsing, chunking, and embeddings (the RAG
  *       "write" path); {@code com.wealth.advisor.agent.tool.PortfolioSearchTool} is the "read" path.

@@ -1,4 +1,4 @@
-package com.wealth.advisor.infra;
+package com.wealth.advisor.config;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
