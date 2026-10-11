@@ -101,8 +101,8 @@ Decisions confirmed 2026-10-11: prompts as resource files, repository layer late
 | YAML (`application.yml`) | **Done** — `c41e447` |
 | Typed `AdvisorProperties` (yml is single source, validated, no code defaults) | **Done** — `34e33d4` |
 | Constants classes (`constants/`) | **Done** — `3fe0cb6` |
-| Prompts as resource files | Confirmed, **not started** (step 2) |
-| Config classes into one `config/` package; split `AgentConfig` | Confirmed, **not started** (step 2) |
+| Prompts as resource files (`resources/prompts/`, `PromptLoader`, versioned by hash) | **Done** — `8f22b93` |
+| Config classes into one `config/` package; runner split out as `RunnerConfig` | **Done** — `3b62dc8` |
 | Util extraction (ADK text helper, one `ObjectMapper`) | Confirmed, **not started** (step 3) |
 | Service split (`ChatService` / `ChatSessionService`), `dto/` + `exception/` packages, `@RestControllerAdvice` | Confirmed, **not started** (step 4) |
 | Repository layer | Later — when Topic 5 (analytics tables) needs it |
