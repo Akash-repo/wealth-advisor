@@ -93,12 +93,24 @@ earn their place — Strategy and Chain of Responsibility for guardrails, Decora
 
 ## 7. Status
 
+Decisions confirmed 2026-10-11: prompts as resource files, repository layer later, order of work.
+
 | Item | State |
 |---|---|
 | Layered structure (A) | Decided |
-| YAML + typed properties + constants classes | Decided |
-| Prompts as resource files | Proposed, not yet confirmed |
-| Repository layer | Proposed: **later**, when Topic 5 (analytics tables) needs it — not confirmed |
-| Order of work | Proposed, not confirmed: (1) constants + `AdvisorProperties` + yml, (2) prompts out + config package, (3) util extraction, (4) service split + dto/exception packages |
+| YAML (`application.yml`) | **Done** — `c41e447` |
+| Typed `AdvisorProperties` (yml is single source, validated, no code defaults) | **Done** — `34e33d4` |
+| Constants classes (`constants/`) | **Done** — `3fe0cb6` |
+| Prompts as resource files | Confirmed, **not started** (step 2) |
+| Config classes into one `config/` package; split `AgentConfig` | Confirmed, **not started** (step 2) |
+| Util extraction (ADK text helper, one `ObjectMapper`) | Confirmed, **not started** (step 3) |
+| Service split (`ChatService` / `ChatSessionService`), `dto/` + `exception/` packages, `@RestControllerAdvice` | Confirmed, **not started** (step 4) |
+| Repository layer | Later — when Topic 5 (analytics tables) needs it |
 | ArchUnit dependency rules | Proposed, not confirmed |
-| Implementation | **Not started** — awaiting explicit go-ahead |
+
+### Deliberately left as constants
+
+- `ChatRequest.MAX_MESSAGE_LENGTH` — a bean-validation annotation value must be a compile-time
+  constant, so it cannot be bound from YAML.
+- Smaller single-use values (`TextChunker` words per chunk, `PortfolioSearchTool` result count,
+  minimum password length) — can move into `AdvisorProperties` later if they need tuning.
