@@ -1,5 +1,6 @@
 package com.wealth.advisor.security;
 
+import com.wealth.advisor.constants.FirestoreCollections;
 import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.Firestore;
@@ -62,7 +63,7 @@ public class UserRegistrationService {
 					"Password must be at least " + MIN_PASSWORD_LENGTH + " characters.");
 		}
 
-		DocumentReference userRef = firestore.collection("users").document(username);
+		DocumentReference userRef = firestore.collection(FirestoreCollections.USERS).document(username);
 		try {
 			// Not transactional — a learning-app simplification. Two concurrent signups for the
 			// same username could theoretically both pass this check; not worth a Firestore

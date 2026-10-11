@@ -1,5 +1,6 @@
 package com.wealth.advisor.audit;
 
+import com.wealth.advisor.constants.BigQueryNames;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.tools.BaseTool;
 import com.google.cloud.bigquery.BigQuery;
@@ -67,9 +68,6 @@ public class ToolUsageSchemaInitializer implements ApplicationRunner {
 
 	private static final Logger log = LoggerFactory.getLogger(ToolUsageSchemaInitializer.class);
 
-	static final String INVOCATIONS_TABLE = "tool_invocations";
-	static final String REGISTRY_EVENTS_TABLE = "tool_registry_events";
-	static final String REGISTRY_VIEW = "tool_registry";
 
 	private final BigQuery bigQuery;
 	private final List<LlmAgent> agents;
@@ -93,19 +91,19 @@ public class ToolUsageSchemaInitializer implements ApplicationRunner {
 	}
 
 	private void ensureTablesExist() throws InterruptedException {
-		if (bigQuery.getTable(AuditSchemaInitializer.DATASET, INVOCATIONS_TABLE) == null) {
+		if (bigQuery.getTable(BigQueryNames.DATASET, BigQueryNames.TOOL_INVOCATIONS) == null) {
 			bigQuery.create(
 					TableInfo.newBuilder(
-									TableId.of(AuditSchemaInitializer.DATASET, INVOCATIONS_TABLE), invocationsDefinition())
+									TableId.of(BigQueryNames.DATASET, BigQueryNames.TOOL_INVOCATIONS), invocationsDefinition())
 							.setTableConstraints(invocationsConstraints())
 							.build());
-			log.info("Created BigQuery table '{}.{}'", AuditSchemaInitializer.DATASET, INVOCATIONS_TABLE);
+			log.info("Created BigQuery table '{}.{}'", BigQueryNames.DATASET, BigQueryNames.TOOL_INVOCATIONS);
 		}
-		if (bigQuery.getTable(AuditSchemaInitializer.DATASET, REGISTRY_EVENTS_TABLE) == null) {
+		if (bigQuery.getTable(BigQueryNames.DATASET, BigQueryNames.TOOL_REGISTRY_EVENTS) == null) {
 			bigQuery.create(
 					TableInfo.of(
-							TableId.of(AuditSchemaInitializer.DATASET, REGISTRY_EVENTS_TABLE), registryEventsDefinition()));
-			log.info("Created BigQuery table '{}.{}'", AuditSchemaInitializer.DATASET, REGISTRY_EVENTS_TABLE);
+							TableId.of(BigQueryNames.DATASET, BigQueryNames.TOOL_REGISTRY_EVENTS), registryEventsDefinition()));
+			log.info("Created BigQuery table '{}.{}'", BigQueryNames.DATASET, BigQueryNames.TOOL_REGISTRY_EVENTS);
 		}
 		// Re-issued every startup (idempotent, metadata-only, no data risk) so the view definition
 		// can never drift from what this class actually creates it as.
@@ -122,7 +120,7 @@ public class ToolUsageSchemaInitializer implements ApplicationRunner {
 								GROUP BY tool_name
 								"""
 								.formatted(
-										qualifiedTableRef(REGISTRY_VIEW), qualifiedTableRef(REGISTRY_EVENTS_TABLE)))
+										qualifiedTableRef(BigQueryNames.TOOL_REGISTRY_VIEW), qualifiedTableRef(BigQueryNames.TOOL_REGISTRY_EVENTS)))
 						.build());
 	}
 
@@ -135,7 +133,7 @@ public class ToolUsageSchemaInitializer implements ApplicationRunner {
 	private void syncToolRegistry() {
 		Instant now = Instant.now();
 		InsertAllRequest.Builder request =
-				InsertAllRequest.newBuilder(TableId.of(AuditSchemaInitializer.DATASET, REGISTRY_EVENTS_TABLE));
+				InsertAllRequest.newBuilder(TableId.of(BigQueryNames.DATASET, BigQueryNames.TOOL_REGISTRY_EVENTS));
 		for (LlmAgent agent : agents) {
 			for (BaseTool tool : agent.tools().blockingGet()) {
 				Map<String, Object> row = new HashMap<>();
@@ -156,7 +154,7 @@ public class ToolUsageSchemaInitializer implements ApplicationRunner {
 	}
 
 	private String qualifiedTableRef(String table) {
-		return "%s.%s.%s".formatted(bigQuery.getOptions().getProjectId(), AuditSchemaInitializer.DATASET, table);
+		return "%s.%s.%s".formatted(bigQuery.getOptions().getProjectId(), BigQueryNames.DATASET, table);
 	}
 
 	private static StandardTableDefinition invocationsDefinition() {
@@ -192,8 +190,8 @@ public class ToolUsageSchemaInitializer implements ApplicationRunner {
 										.setReferencedTable(
 												TableId.of(
 														bigQuery.getOptions().getProjectId(),
-														AuditSchemaInitializer.DATASET,
-														AuditSchemaInitializer.TABLE))
+														BigQueryNames.DATASET,
+														BigQueryNames.AGENT_AUDIT_LOG))
 										.setColumnReferences(
 												List.of(
 														ColumnReference.newBuilder()

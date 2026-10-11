@@ -1,5 +1,6 @@
 package com.wealth.advisor.audit;
 
+import com.wealth.advisor.constants.BigQueryNames;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.DatasetInfo;
 import com.google.cloud.bigquery.Field;
@@ -46,8 +47,6 @@ public class AuditSchemaInitializer implements ApplicationRunner {
 
 	private static final Logger log = LoggerFactory.getLogger(AuditSchemaInitializer.class);
 
-	static final String DATASET = "wealth_agent";
-	static final String TABLE = "agent_audit_log";
 
 	private final BigQuery bigQuery;
 
@@ -58,20 +57,20 @@ public class AuditSchemaInitializer implements ApplicationRunner {
 	@Override
 	public void run(ApplicationArguments args) {
 		try {
-			if (bigQuery.getDataset(DATASET) == null) {
-				bigQuery.create(DatasetInfo.newBuilder(DATASET).build());
-				log.info("Created BigQuery dataset '{}'", DATASET);
+			if (bigQuery.getDataset(BigQueryNames.DATASET) == null) {
+				bigQuery.create(DatasetInfo.newBuilder(BigQueryNames.DATASET).build());
+				log.info("Created BigQuery dataset '{}'", BigQueryNames.DATASET);
 			}
-			Table table = bigQuery.getTable(DATASET, TABLE);
+			Table table = bigQuery.getTable(BigQueryNames.DATASET, BigQueryNames.AGENT_AUDIT_LOG);
 			if (table == null) {
 				bigQuery.create(
-						TableInfo.newBuilder(TableId.of(DATASET, TABLE), StandardTableDefinition.of(schema()))
+						TableInfo.newBuilder(TableId.of(BigQueryNames.DATASET, BigQueryNames.AGENT_AUDIT_LOG), StandardTableDefinition.of(schema()))
 								.setTableConstraints(primaryKeyConstraint())
 								.build());
-				log.info("Created BigQuery table '{}.{}'", DATASET, TABLE);
+				log.info("Created BigQuery table '{}.{}'", BigQueryNames.DATASET, BigQueryNames.AGENT_AUDIT_LOG);
 			} else if (table.getTableConstraints() == null || table.getTableConstraints().getPrimaryKey() == null) {
 				bigQuery.update(table.toBuilder().setTableConstraints(primaryKeyConstraint()).build());
-				log.info("Retrofitted primary key constraint onto existing BigQuery table '{}.{}'", DATASET, TABLE);
+				log.info("Retrofitted primary key constraint onto existing BigQuery table '{}.{}'", BigQueryNames.DATASET, BigQueryNames.AGENT_AUDIT_LOG);
 			}
 		} catch (Exception e) {
 			log.warn(

@@ -1,5 +1,7 @@
 package com.wealth.advisor.agent.tool;
 
+import com.wealth.advisor.constants.FirestoreFields;
+import com.wealth.advisor.constants.FirestoreCollections;
 import com.google.adk.tools.Annotations.Schema;
 import com.google.adk.tools.ToolContext;
 import com.google.cloud.firestore.Firestore;
@@ -83,7 +85,7 @@ public class PortfolioAllocationTool {
 
 		List<QueryDocumentSnapshot> docs;
 		try {
-			docs = firestore.collection("portfolio_holdings").whereEqualTo("userId", userId).get().get().getDocuments();
+			docs = firestore.collection(FirestoreCollections.PORTFOLIO_HOLDINGS).whereEqualTo(FirestoreFields.USER_ID, userId).get().get().getDocuments();
 		} catch (InterruptedException | ExecutionException e) {
 			Thread.currentThread().interrupt();
 			log.error("Portfolio holdings query failed for userId='{}'", userId, e);

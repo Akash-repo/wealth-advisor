@@ -1,5 +1,6 @@
 package com.wealth.advisor.agent;
 
+import com.wealth.advisor.constants.SessionStateKeys;
 import com.google.adk.events.Event;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.FirestoreSessionService;
@@ -211,7 +212,7 @@ public class AgentChatService {
 								.sessionService()
 								.getSession(runner.appName(), userId, s.id(), Optional.of(titleOnly))
 								.blockingGet();
-				if (full != null && full.state().get(TITLE_KEY) instanceof String t) {
+				if (full != null && full.state().get(SessionStateKeys.TITLE) instanceof String t) {
 					title = t;
 				}
 			} catch (RuntimeException e) {
@@ -258,13 +259,12 @@ public class AgentChatService {
 		runner.sessionService().deleteSession(runner.appName(), userId, sessionId).blockingAwait();
 	}
 
-	private static final String TITLE_KEY = "title";
 
 	private String createSession(String userId, String title) {
 		String sessionId = UUID.randomUUID().toString();
 		runner
 				.sessionService()
-				.createSession(runner.appName(), userId, new ConcurrentHashMap<>(Map.of(TITLE_KEY, title)), sessionId)
+				.createSession(runner.appName(), userId, new ConcurrentHashMap<>(Map.of(SessionStateKeys.TITLE, title)), sessionId)
 				.blockingGet();
 		log.info("Created session '{}' for userId='{}'", sessionId, userId);
 		return sessionId;

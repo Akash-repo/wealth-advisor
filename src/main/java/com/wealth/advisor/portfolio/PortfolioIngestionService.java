@@ -1,5 +1,7 @@
 package com.wealth.advisor.portfolio;
 
+import com.wealth.advisor.constants.FirestoreFields;
+import com.wealth.advisor.constants.FirestoreCollections;
 import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.FieldValue;
 import com.google.cloud.firestore.Firestore;
@@ -98,7 +100,7 @@ public class PortfolioIngestionService {
 	/** Lists this user's uploaded documents (metadata only, newest first). */
 	public List<Map<String, Object>> listDocuments(String userId) {
 		try {
-			return firestore.collection("portfolio_documents").whereEqualTo("userId", userId).get().get()
+			return firestore.collection(FirestoreCollections.PORTFOLIO_DOCUMENTS).whereEqualTo(FirestoreFields.USER_ID, userId).get().get()
 					.getDocuments().stream()
 					.sorted((a, b) -> b.getTimestamp("uploadedAt").compareTo(a.getTimestamp("uploadedAt")))
 					.map(QueryDocumentSnapshot::getData)
@@ -113,9 +115,9 @@ public class PortfolioIngestionService {
 	/** Deletes an uploaded document's chunks, extracted holdings, and its metadata record. */
 	public void deleteDocument(String userId, String filename) {
 		try {
-			deleteWhereUserAndFilename("portfolio_vectors", userId, filename);
-			deleteWhereUserAndFilename("portfolio_holdings", userId, filename);
-			deleteWhereUserAndFilename("portfolio_documents", userId, filename);
+			deleteWhereUserAndFilename(FirestoreCollections.PORTFOLIO_VECTORS, userId, filename);
+			deleteWhereUserAndFilename(FirestoreCollections.PORTFOLIO_HOLDINGS, userId, filename);
+			deleteWhereUserAndFilename(FirestoreCollections.PORTFOLIO_DOCUMENTS, userId, filename);
 			log.info("Deleted document '{}' and its data for userId='{}'", filename, userId);
 		} catch (InterruptedException | ExecutionException e) {
 			Thread.currentThread().interrupt();
@@ -129,7 +131,7 @@ public class PortfolioIngestionService {
 		List<QueryDocumentSnapshot> docs =
 				firestore
 						.collection(collection)
-						.whereEqualTo("userId", userId)
+						.whereEqualTo(FirestoreFields.USER_ID, userId)
 						.whereEqualTo("filename", filename)
 						.get()
 						.get()
@@ -151,10 +153,10 @@ public class PortfolioIngestionService {
 	private void writeChunk(String userId, String filename, String chunkText, double[] embedding) {
 		try {
 			firestore
-					.collection("portfolio_vectors")
+					.collection(FirestoreCollections.PORTFOLIO_VECTORS)
 					.add(
 							Map.of(
-									"userId", userId,
+									FirestoreFields.USER_ID, userId,
 									"filename", filename,
 									"chunkText", chunkText,
 									"embedding", FieldValue.vector(embedding),
@@ -176,14 +178,14 @@ public class PortfolioIngestionService {
 		}
 		try {
 			Map<String, Object> doc = new HashMap<>();
-			doc.put("userId", userId);
+			doc.put(FirestoreFields.USER_ID, userId);
 			doc.put("filename", filename);
 			doc.put("ticker", ticker.toString().toUpperCase());
 			doc.put("shares", shares);
 			doc.put("costBasis", holding.get("costBasis"));
 			doc.put("account", holding.get("account"));
 			doc.put("extractedAt", Timestamp.now());
-			firestore.collection("portfolio_holdings").add(doc).get();
+			firestore.collection(FirestoreCollections.PORTFOLIO_HOLDINGS).add(doc).get();
 		} catch (InterruptedException | ExecutionException e) {
 			Thread.currentThread().interrupt();
 			log.error("Failed to store a portfolio holding for userId='{}', filename='{}'", userId, filename, e);
@@ -195,10 +197,10 @@ public class PortfolioIngestionService {
 			String userId, String filename, String documentType, int chunkCount, int holdingsCount) {
 		try {
 			firestore
-					.collection("portfolio_documents")
+					.collection(FirestoreCollections.PORTFOLIO_DOCUMENTS)
 					.add(
 							Map.of(
-									"userId", userId,
+									FirestoreFields.USER_ID, userId,
 									"filename", filename,
 									"documentType", documentType,
 									"chunkCount", chunkCount,
@@ -214,7 +216,7 @@ public class PortfolioIngestionService {
 
 	private void markPortfolioUploaded(String userId) {
 		try {
-			firestore.collection("users").document(userId).update("hasUploadedPortfolio", true).get();
+			firestore.collection(FirestoreCollections.USERS).document(userId).update("hasUploadedPortfolio", true).get();
 		} catch (InterruptedException | ExecutionException e) {
 			Thread.currentThread().interrupt();
 			log.error("Failed to set hasUploadedPortfolio for userId='{}'", userId, e);

@@ -1,5 +1,7 @@
 package com.wealth.advisor.agent.tool;
 
+import com.wealth.advisor.constants.FirestoreFields;
+import com.wealth.advisor.constants.FirestoreCollections;
 import com.google.adk.tools.Annotations.Schema;
 import com.google.adk.tools.ToolContext;
 import com.google.cloud.firestore.Firestore;
@@ -72,8 +74,8 @@ public class PortfolioSearchTool {
 
 		VectorQuery vectorQuery =
 				firestore
-						.collection("portfolio_vectors")
-						.whereEqualTo("userId", userId)
+						.collection(FirestoreCollections.PORTFOLIO_VECTORS)
+						.whereEqualTo(FirestoreFields.USER_ID, userId)
 						.findNearest("embedding", queryVector, MAX_RESULTS, VectorQuery.DistanceMeasure.COSINE);
 
 		List<QueryDocumentSnapshot> matches;

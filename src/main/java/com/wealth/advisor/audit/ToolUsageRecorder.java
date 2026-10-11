@@ -1,5 +1,6 @@
 package com.wealth.advisor.audit;
 
+import com.wealth.advisor.constants.BigQueryNames;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.tools.BaseTool;
@@ -150,7 +151,7 @@ public class ToolUsageRecorder {
 		try {
 			InsertAllRequest.Builder request =
 					InsertAllRequest.newBuilder(
-							TableId.of(AuditSchemaInitializer.DATASET, ToolUsageSchemaInitializer.INVOCATIONS_TABLE));
+							TableId.of(BigQueryNames.DATASET, BigQueryNames.TOOL_INVOCATIONS));
 			rows.forEach(request::addRow);
 			InsertAllResponse response = bigQuery.insertAll(request.build());
 			if (response.hasErrors()) {

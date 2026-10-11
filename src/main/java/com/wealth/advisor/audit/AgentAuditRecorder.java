@@ -1,5 +1,6 @@
 package com.wealth.advisor.audit;
 
+import com.wealth.advisor.constants.BigQueryNames;
 import com.fasterxml.jackson.annotation.JsonRawValue;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.agents.CallbackContext;
@@ -202,7 +203,7 @@ public class AgentAuditRecorder {
 
 			InsertAllResponse response =
 					bigQuery.insertAll(
-							InsertAllRequest.newBuilder(TableId.of(AuditSchemaInitializer.DATASET, AuditSchemaInitializer.TABLE))
+							InsertAllRequest.newBuilder(TableId.of(BigQueryNames.DATASET, BigQueryNames.AGENT_AUDIT_LOG))
 									.addRow(row)
 									.build());
 			if (response.hasErrors()) {

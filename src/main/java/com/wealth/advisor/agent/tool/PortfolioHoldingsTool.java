@@ -1,5 +1,7 @@
 package com.wealth.advisor.agent.tool;
 
+import com.wealth.advisor.constants.FirestoreFields;
+import com.wealth.advisor.constants.FirestoreCollections;
 import com.google.adk.tools.Annotations.Schema;
 import com.google.adk.tools.ToolContext;
 import com.google.cloud.firestore.DocumentSnapshot;
@@ -65,7 +67,7 @@ public class PortfolioHoldingsTool {
 		boolean singleTicker = ticker != null && !ticker.isBlank();
 		log.debug("getPortfolioHoldings(userId='{}', ticker='{}')", userId, singleTicker ? ticker : "<all>");
 
-		Query query = firestore.collection("portfolio_holdings").whereEqualTo("userId", userId);
+		Query query = firestore.collection(FirestoreCollections.PORTFOLIO_HOLDINGS).whereEqualTo(FirestoreFields.USER_ID, userId);
 		if (singleTicker) {
 			query = query.whereEqualTo("ticker", ticker.toUpperCase());
 		}

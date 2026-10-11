@@ -1,5 +1,6 @@
 package com.wealth.advisor.security;
 
+import com.wealth.advisor.constants.FirestoreCollections;
 import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.Firestore;
@@ -42,7 +43,7 @@ public class DemoUserSeeder implements ApplicationRunner {
 	@Override
 	public void run(ApplicationArguments args) {
 		try {
-			DocumentReference userRef = firestore.collection("users").document(demoUsername);
+			DocumentReference userRef = firestore.collection(FirestoreCollections.USERS).document(demoUsername);
 			if (userRef.get().get().exists()) {
 				log.debug("Demo user '{}' already exists, nothing to seed", demoUsername);
 				return;
