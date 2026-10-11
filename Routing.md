@@ -19,12 +19,13 @@ Diagrams are [Mermaid](https://mermaid.js.org/); they render on GitHub and in mo
 6. [Tool routing — which store each tool touches](#6-tool-routing--which-store-each-tool-touches)
 7. [Document upload flow](#7-document-upload-flow)
 8. [Authentication flow](#8-authentication-flow)
-9. [Observability write path](#9-observability-write-path)
-10. [Startup flow](#10-startup-flow)
-11. [Where data lives](#11-where-data-lives)
-12. [What is retrieved, and what is deterministic vs probabilistic](#12-what-is-retrieved-and-what-is-deterministic-vs-probabilistic)
-13. [What the prompts control vs what code controls](#13-what-the-prompts-control-vs-what-code-controls)
-14. [Known weak spots in the routing](#14-known-weak-spots-in-the-routing)
+9. [How the app authenticates to Google Cloud](#9-how-the-app-authenticates-to-google-cloud)
+10. [Observability write path](#10-observability-write-path)
+11. [Startup flow](#11-startup-flow)
+12. [Where data lives](#12-where-data-lives)
+13. [What is retrieved, and what is deterministic vs probabilistic](#13-what-is-retrieved-and-what-is-deterministic-vs-probabilistic)
+14. [What the prompts control vs what code controls](#14-what-the-prompts-control-vs-what-code-controls)
+15. [Known weak spots in the routing](#15-known-weak-spots-in-the-routing)
 
 ---
 
@@ -231,7 +232,7 @@ Facts behind the boxes (verified in ADK 1.7.0 sources):
 - `SequentialAgent` runs every sub-agent every turn; nothing can skip the second one.
 - Compaction runs as a request processor **before each model call** and is synchronous. It has not
   been seen to fire in real data, and its persistence across turns is unproven
-  (see [section 14](#14-known-weak-spots-in-the-routing)).
+  (see [section 15](#15-known-weak-spots-in-the-routing)).
 - The loop ends only when the model returns a response containing no function call. The only
   built-in bound is `RunConfig.maxLlmCalls` (default 500); we do not set it.
 
@@ -362,7 +363,96 @@ CSRF tokens are disabled; the app relies on the same-origin `SameSite=Lax` cooki
 
 ---
 
-## 9. Observability write path
+## 9. How the app authenticates to Google Cloud
+
+Section 8 is how a **user** logs in to the app. This is the other direction: how the **app**
+proves its identity to Firestore, BigQuery and Vertex AI. No credential appears anywhere in the
+code; the client libraries and the platform handle it.
+
+### On Cloud Run
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Code as Our code<br/>(Firestore, BigQuery, GenAI clients)
+    participant Lib as Google client library
+    participant MD as Metadata server<br/>(only exists on GCP)
+    participant API as Google API front end<br/>(firestore / bigquery / aiplatform)
+    participant IAM as IAM policy check
+
+    Note over Code,Lib: Built with only a project id. No credentials passed.
+    Code->>Lib: first call, e.g. firestore.collection(...).get()
+    Lib->>Lib: ADC lookup: GOOGLE_APPLICATION_CREDENTIALS? no. gcloud ADC file? no.
+    Lib->>MD: GET .../service-accounts/default/token (header Metadata-Flavor Google)
+    MD-->>Lib: access token for the attached service account, valid about 1 hour
+    Lib->>Lib: cache token in memory, refresh before expiry
+    Lib->>API: request + Authorization Bearer token
+    API->>API: authenticate: validate token, resolve principal
+    API->>IAM: may wealth-advisor-run do this permission on this resource?
+    alt a role grants the permission
+        IAM-->>API: allow
+        API-->>Lib: 200 + data
+    else no binding, or a deny policy applies
+        IAM-->>API: deny
+        API-->>Lib: 403 PERMISSION_DENIED
+    end
+    Lib-->>Code: result or exception
+```
+
+### Where the credential comes from
+
+```mermaid
+flowchart TD
+    START(["Client library needs credentials<br/>(Application Default Credentials)"]) --> E{"GOOGLE_APPLICATION_CREDENTIALS<br/>env var set?"}
+    E -- yes --> KEY["Use that service-account key file<br/>(we do not do this)"]
+    E -- no --> F{"gcloud ADC file exists?<br/>~/.config/gcloud/application_default_credentials.json"}
+    F -- yes --> USER["LOCAL RUN<br/>Exchange your stored refresh token<br/>for an access token<br/>Principal = YOU"]
+    F -- no --> M{"Metadata server reachable?"}
+    M -- yes --> SA["CLOUD RUN<br/>Metadata server issues a token<br/>Principal = wealth-advisor-run"]
+    M -- no --> FAIL["Fail: could not load<br/>default credentials"]
+    KEY --> CALL
+    USER --> CALL
+    SA --> CALL
+    CALL["Call API with Bearer token<br/>then IAM decides allow or 403"]
+```
+
+### What we write vs what is automatic
+
+| We write or configure | The platform and libraries do |
+|---|---|
+| The project id (`gcp.project-id`) | ADC discovery order |
+| `serviceAccountName` on the Cloud Run revision | Issuing and rotating the signing keys (system-managed, not downloadable) |
+| IAM role grants for that account | Minting a short-lived access token, caching and refreshing it |
+| Env vars that pick the Vertex route (`GOOGLE_GENAI_USE_VERTEXAI`, project, location) | Attaching the Bearer token to every gRPC or REST call, TLS |
+| Nothing else; no key file, no token code | Authentication, then the IAM authorization decision |
+
+### Which role is used by what
+
+`wealth-advisor-run` holds five project roles; every component shares all of them.
+
+| Role | Used for |
+|---|---|
+| `roles/datastore.user` | All Firestore reads and writes: sessions and events, users, `portfolio_*`, `market_data_cache` |
+| `roles/aiplatform.user` | Gemini calls (both agents, the compaction summarizer, holdings extraction) and embeddings |
+| `roles/bigquery.dataEditor` (project level) | Inserting audit and tool rows; creating the dataset and tables at startup |
+| `roles/bigquery.jobUser` | Running query jobs |
+| `roles/secretmanager.secretAccessor` | Reading `FMP_API_KEY` if it is stored in Secret Manager |
+
+### Local runs are a different identity
+
+Running locally uses the **ADC file, which is your own user account**, not the service account.
+Every local test therefore runs with your (broad) permissions. A local pass proves nothing about
+whether `wealth-advisor-run` has enough access; the deployed service is the first real test of its
+roles.
+
+| Symptom | Meaning | First thing to check |
+|---|---|---|
+| `401` / "could not load default credentials" | no valid credential found, or token expired | locally: `gcloud auth application-default login`; on Cloud Run: is a service account attached? |
+| `403 PERMISSION_DENIED` | authenticated, but IAM has no allowing binding | the permission named in the error against the account's roles (Policy Troubleshooter) |
+
+---
+
+## 10. Observability write path
 
 ```mermaid
 flowchart LR
@@ -394,7 +484,7 @@ flowchart LR
 
 ---
 
-## 10. Startup flow
+## 11. Startup flow
 
 ```mermaid
 flowchart TD
@@ -413,7 +503,7 @@ flowchart TD
 
 ---
 
-## 11. Where data lives
+## 12. Where data lives
 
 | Store | Collection / table | What | Written by | Read by |
 |---|---|---|---|---|
@@ -432,7 +522,7 @@ Names live in `constants/FirestoreCollections` and `constants/BigQueryNames`. Tu
 
 ---
 
-## 12. What is retrieved, and what is deterministic vs probabilistic
+## 13. What is retrieved, and what is deterministic vs probabilistic
 
 ### What goes into the model's context
 
@@ -491,7 +581,7 @@ risk tolerance, say) should not depend on the model choosing to call a tool.
 
 ---
 
-## 13. What the prompts control vs what code controls
+## 14. What the prompts control vs what code controls
 
 There is **no separate global "system prompt"** in this app. Each agent has one `instruction`, loaded
 from `resources/prompts/<name>.txt`, and ADK sends it as that model call's system instruction.
@@ -535,7 +625,7 @@ post-check), or to measure it with an eval, rather than to add more words to the
 
 ---
 
-## 14. Known weak spots in the routing
+## 15. Known weak spots in the routing
 
 Stated plainly so the diagrams are not read as a guarantee.
 
