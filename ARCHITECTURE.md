@@ -843,6 +843,54 @@ test` run — these make real, non-free Gemini/FMP calls and take ~100s for the 
 milliseconds). Verified stable across two independent full live runs (5/5 both times) — LLM output
 is not literally deterministic, so a single green run isn't itself proof a fix holds.
 
+## Sessions and memory
+
+A user can have many conversations. Three ADK concepts are in play, and they are easy to blur:
+
+| Layer | What it is | Class | Scope |
+|---|---|---|---|
+| Short-term | One conversation's events + state | `FirestoreSessionService` / `Session` | one `(app, userId, sessionId)` |
+| Long-term | Keyword search over a user's past events | `FirestoreMemoryService` (`BaseMemoryService`) | all of one user's sessions |
+| Agent access | The model decides to search | `LoadMemoryTool` | called by `portfolio_analysis` |
+
+**Multi-session.** `POST /api/chat` takes an optional `sessionId`; omitted means "start a new
+conversation" and the server mints a UUID (title = first message) and returns it. Ownership is
+ADK's own `(app, userId, sessionId)` key: another user's id resolves to nothing, surfaced as a 404
+(`ChatSessionNotFoundException`) rather than get-or-create. One turn at a time per session — a
+second concurrent message gets a 409 (`ChatSessionBusyException`). Sessions created before this
+change used `sessionId == userId`; they still resolve and appear in the list as "Conversation".
+
+**Audit correlation.** `AgentAuditRecorder` / `ToolUsageRecorder` index in-flight turns by
+`TurnKey(userId, sessionId)`, not `userId`. Keyed by user alone, two tabs would overwrite each
+other's invocation id (`AgentAuditRecorderTest` pins this).
+
+**What `FirestoreMemoryService` really does** (read from the 1.7.0 sources, not the docs):
+- `addSessionToMemory` is a **no-op**. `FirestoreSessionService` already writes a `keywords` array
+  on every appended event, so memory is just a query over those events — no ingest step.
+- `searchMemory` runs a collection-group query on `user-event` filtered by `appName`, `userId`,
+  and `keywords array-contains-any <query words minus stop words>`. Keyword match only — no
+  embeddings, no ranking, **no result limit**, and it includes the current session and the agent's
+  own replies. A broad query can return a lot of text into the model's context.
+- It needs a Firestore collection-group index on `user-event` (`appName`, `userId`, `keywords`).
+  The first query fails with an error containing a console link to create it.
+
+**`GuardedMemoryService`** wraps the real service because two things were found running it live:
+a backend error (e.g. the missing index above) surfaced through `LoadMemoryTool` as a tool
+exception, which failed the whole turn with a 500; and results are unbounded. The wrapper turns an
+error into "no memories" (logged at WARN) and keeps only the 8 most recent entries at 500 chars
+each. Recency is a stand-in ranking, since the backend gives no relevance score.
+
+**`FirestoreSessionService` 1.7.0 quirks** (read from source, confirmed live):
+- `listSessions` returns every session with *empty* state and events — titles need a `getSession`.
+- A user's own events are stored with `author == userId`, not the literal `"user"`.
+- State scoping looks for `_user_` / `_app_` key prefixes while ADK core uses `user:` / `app:`, and
+  nothing reads the `user-state` collection back into a new session — so cross-session
+  preferences via `user:` state do **not** work with this session service.
+
+**Not in the Java SDK (1.7.0):** Vertex AI Memory Bank (LLM-extracted, consolidated memories) and
+a `PreloadMemoryTool`. Only `VertexAiSessionService` exists. Extracting durable facts would be our
+own code.
+
 ## Environment variables
 
 | Variable                  | Purpose                                                              |

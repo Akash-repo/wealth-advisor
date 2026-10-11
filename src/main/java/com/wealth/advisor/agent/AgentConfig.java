@@ -3,12 +3,14 @@ package com.wealth.advisor.agent;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.apps.App;
+import com.google.adk.memory.FirestoreMemoryService;
 import com.google.adk.models.Gemini;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.FirestoreSessionService;
 import com.google.adk.summarizer.EventsCompactionConfig;
 import com.google.adk.summarizer.LlmEventSummarizer;
 import com.google.adk.tools.FunctionTool;
+import com.google.adk.tools.LoadMemoryTool;
 import com.google.cloud.firestore.Firestore;
 import com.google.genai.Client;
 import com.wealth.advisor.agent.tool.PortfolioAllocationTool;
@@ -82,6 +84,14 @@ public class AgentConfig {
 						- getStockData — current price and fundamentals (P/E, PEG, forward P/E, EPS growth,
 						  free cash flow per share) for a stock the user mentions. Data may be up to a day
 						  stale, which is fine to mention if relevant but not something to caveat every time.
+						- loadMemory — searches this user's past conversations (including other chats) by
+						  keyword. Use it only when the user refers to something they said or decided
+						  earlier ("like I told you before", "my goal from last time", "what did we
+						  conclude about X"), or states a personal preference or goal you'd otherwise have
+						  to guess. Pass a few distinctive keywords, not a full sentence. Its results can
+						  include this conversation and your own earlier replies — treat them as context,
+						  not as authoritative portfolio numbers; the portfolio tools above remain the
+						  source of truth for holdings and prices.
 
 						Never ask the user whether you should look something up, and never answer from
 						memory when a tool could give you the real number — just call the tool. In
@@ -108,7 +118,10 @@ public class AgentConfig {
 						FunctionTool.create(stockLookupTool, "getStockData"),
 						FunctionTool.create(portfolioSearchTool, "searchPortfolio"),
 						FunctionTool.create(portfolioHoldingsTool, "getPortfolioHoldings"),
-						FunctionTool.create(portfolioAllocationTool, "getPortfolioAllocation"))
+						FunctionTool.create(portfolioAllocationTool, "getPortfolioAllocation"),
+						// Long-term memory: keyword search over this user's events across ALL their
+						// sessions, backed by the FirestoreMemoryService wired into the Runner below.
+						new LoadMemoryTool())
 				.outputKey("portfolio_analysis")
 				// Every real call to Gemini this agent makes gets recorded to BigQuery — see
 				// AgentAuditRecorder's javadoc for how a whole turn gets correlated across agents.
@@ -253,6 +266,16 @@ public class AgentConfig {
 										.eventRetentionSize(COMPACTION_EVENT_RETENTION_SIZE)
 										.build())
 						.build();
-		return Runner.builder().app(app).sessionService(new FirestoreSessionService(firestore)).build();
+		return Runner.builder()
+				.app(app)
+				// Short-term memory: one session = one conversation's events + state.
+				.sessionService(new FirestoreSessionService(firestore))
+				// Long-term memory: searches events across all of a user's sessions. Its
+				// addSessionToMemory is a no-op — FirestoreSessionService already indexes keywords on
+				// every appended event, so there's no separate "ingest" step. Wrapped in
+				// GuardedMemoryService because the raw one throws on backend errors (failing the whole
+				// turn) and returns unbounded results. See ARCHITECTURE.md.
+				.memoryService(new GuardedMemoryService(new FirestoreMemoryService(firestore)))
+				.build();
 	}
 }
