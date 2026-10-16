@@ -650,17 +650,37 @@ is set:
 |---------------------------|-----------|---------------------------------------------------------------|
 | `user_prompt_id`           | string    | ADK's `invocationId` — one per user message                   |
 | `user_id`                  | string    | the authenticated username                                    |
-| `session_id`                | string    | == `user_id` in this app (see [Firestore schema](#firestore-schema)) |
+| `session_id`                | string    | the conversation (ADK session); a user has many (see [Sessions and memory](#sessions-and-memory)) |
 | `user_prompt_text`          | string    | the raw user message                                          |
 | `agent1_name` / `agent2_name` | string  | `portfolio_analysis` / `stock_recommendation`                 |
-| `agent1_llm_calls` / `agent2_llm_calls` | JSON | array of `{requestJson, responseJson, latencyMs, promptTokens, completionTokens}`, one element per real Gemini call that agent made |
+| `agent1_llm_calls` / `agent2_llm_calls` | JSON | array of `{requestJson, responseJson, latencyMs, promptTokens, cachedTokens, completionTokens, thinkingTokens}`, one element per real Gemini call that agent made |
 | `agent1_latency_ms` / `agent2_latency_ms` | int64 | sum of that agent's own call latencies |
-| `agent1_prompt_tokens` / `agent1_completion_tokens` (and `agent2_*`) | int64 | summed across that agent's calls |
+| `agent1_prompt_tokens`, `agent1_cached_tokens`, `agent1_completion_tokens`, `agent1_thinking_tokens` (and `agent2_*`) | int64 | summed across that agent's calls. `cached` is a **subset** of `prompt` (served from Gemini's cache); `thinking` is hidden reasoning, billed like output, **not** part of `completion`. The cached and thinking columns were added 2026-10-16 (NULL on older rows until backfilled) |
 | `input_to_agent2`          | string    | agent 1's output text specifically (not just "whatever text preceded agent 2"), via author-filtered event lookup |
 | `final_response_to_user`    | string    | what `AgentChatService.chat` actually returned                |
 | `total_latency_ms`          | int64     | whole-turn wall-clock time                                     |
 | `status` / `error_message`  | string    | `SUCCESS` or `ERROR` (+ the exception message)                 |
 | `created_at`                | timestamp |                                                                 |
+
+**Token usage views** (`TokenUsageViewInitializer`, SQL in `TokenUsageSql`): `token_usage_by_session`,
+`token_usage_by_user` and `token_usage_by_day` roll the columns above up into `turns`, `prompt_tokens`,
+`cached_tokens`, `completion_tokens`, `thinking_tokens`, `total_tokens` and `cached_share`.
+`total_tokens` = prompt + completion + thinking (cached is not added: it is part of prompt). Without
+the thinking columns, totals understate usage; on real data thinking was about 4x the visible answer.
+Dollar cost is deliberately not modelled for now. New columns reach the live table through in-place
+schema evolution in `AuditSchemaInitializer` (nullable columns are appended; nothing is changed or
+dropped). Rows from before the cached and thinking columns existed can be backfilled once from their
+stored JSON (rows written in the last ~90 minutes sit in BigQuery's streaming buffer and cannot be
+updated yet):
+
+```sql
+UPDATE `PROJECT.wealth_agent.agent_audit_log` t SET
+  agent1_cached_tokens   = (SELECT SUM(IFNULL(SAFE_CAST(JSON_VALUE(c,'$.responseJson.usageMetadata.cachedContentTokenCount') AS INT64),0)) FROM UNNEST(JSON_QUERY_ARRAY(t.agent1_llm_calls)) c),
+  agent1_thinking_tokens = (SELECT SUM(IFNULL(SAFE_CAST(JSON_VALUE(c,'$.responseJson.usageMetadata.thoughtsTokenCount') AS INT64),0))       FROM UNNEST(JSON_QUERY_ARRAY(t.agent1_llm_calls)) c),
+  agent2_cached_tokens   = (SELECT SUM(IFNULL(SAFE_CAST(JSON_VALUE(c,'$.responseJson.usageMetadata.cachedContentTokenCount') AS INT64),0)) FROM UNNEST(JSON_QUERY_ARRAY(t.agent2_llm_calls)) c),
+  agent2_thinking_tokens = (SELECT SUM(IFNULL(SAFE_CAST(JSON_VALUE(c,'$.responseJson.usageMetadata.thoughtsTokenCount') AS INT64),0))       FROM UNNEST(JSON_QUERY_ARRAY(t.agent2_llm_calls)) c)
+WHERE agent1_cached_tokens IS NULL AND created_at < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 2 HOUR);
+```
 
 **Gotcha:** `@JsonRawValue` on `RoundTrip.requestJson`/`responseJson` matters — those fields are
 already-serialized JSON strings (from ADK's own `LlmRequest.toJson()`/`LlmResponse.toJson()`), and

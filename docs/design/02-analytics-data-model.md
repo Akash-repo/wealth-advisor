@@ -49,6 +49,22 @@ in the turn's single row (the model calls as a JSON array).
 the current volume (a few hundred turns) the size and scan costs are negligible. The gaps above are
 real but not yet costly.
 
+### Done so far inside A (2026-10-16)
+
+Token totals per session and per user were wanted, with dollar cost deliberately left out. Two of the
+small fixes below were done for that:
+
+- Fix 2, partly: `agentN_cached_tokens` and `agentN_thinking_tokens` columns, added to the live table
+  **in place** by `AuditSchemaInitializer` (schema evolution appends nullable columns and never
+  changes or drops one) and filled by `AgentAuditRecorder`. Prompt, cached, completion and thinking
+  are separate numbers; cached is a subset of prompt, and thinking is hidden reasoning that is billed
+  like output but is not in completion. Before this the "completion" column undercounted real usage.
+- Three views, `token_usage_by_session`, `token_usage_by_user`, `token_usage_by_day`, with
+  `total_tokens` = prompt + completion + thinking.
+
+Still not done: partitioning and clustering, `user_id`/`session_id` on `tool_invocations`, partition
+expiration, the payload split, prompt version and model columns, and any dollar cost.
+
 ### Small fixes that stay inside A (available later, not scheduled)
 
 1. Recreate the table partitioned by day on `created_at` and clustered by `user_id`, `session_id`

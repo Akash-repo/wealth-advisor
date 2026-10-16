@@ -542,12 +542,14 @@ flowchart TD
     S(["Application starts"]) --> P["Bind and validate application.yml<br/>AdvisorProperties<br/>fails fast on a missing or non-positive value"]
     P --> PL["PromptLoader reads resources/prompts/*.txt<br/>logs each prompt version hash"]
     P --> CL["Create clients<br/>Firestore, BigQuery, GenAI, Jackson 2 mapper"]
-    CL --> BQ1["AuditSchemaInitializer<br/>create dataset + agent_audit_log if missing"]
+    CL --> BQ1["AuditSchemaInitializer<br/>create dataset + agent_audit_log if missing,<br/>add any new columns in place"]
+    BQ1 --> BQ3["TokenUsageViewInitializer<br/>create or refresh the token-usage views"]
     CL --> BQ2["ToolUsageSchemaInitializer<br/>create tool tables + view, record registered tools"]
     CL --> DU["DemoUserSeeder<br/>create the demo user if missing"]
     PL --> AG["Build agents, pipeline, Runner<br/>session service, memory service, compaction"]
     AG --> UP(["Serving requests"])
     BQ1 --> UP
+    BQ3 --> UP
     BQ2 --> UP
     DU --> UP
 ```
@@ -563,7 +565,8 @@ flowchart TD
 | Firestore | `portfolio_documents` | one metadata doc per upload | ingestion | document list |
 | Firestore | `portfolio_holdings` | one doc per holding per upload | ingestion | holdings and allocation tools |
 | Firestore | `market_data_cache` | FMP result per ticker, 24h | `MarketDataService` | `MarketDataService` |
-| BigQuery | `wealth_agent.agent_audit_log` | one row per turn | `AgentAuditRecorder` | analysis |
+| BigQuery | `wealth_agent.agent_audit_log` | one row per turn, with token columns (prompt, cached, completion, thinking) per agent | `AgentAuditRecorder` | analysis, the token-usage views |
+| BigQuery | `wealth_agent.token_usage_by_session` / `_by_user` / `_by_day` | views: token totals per session, user and day | `TokenUsageViewInitializer` | analysis |
 | BigQuery | `wealth_agent.tool_invocations` | one row per tool call | `ToolUsageRecorder` | analysis |
 | BigQuery | `wealth_agent.tool_registry_events` + `tool_registry` view | tools seen at startup | initializer | analysis |
 

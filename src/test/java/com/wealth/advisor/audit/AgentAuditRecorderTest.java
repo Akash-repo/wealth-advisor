@@ -54,4 +54,36 @@ class AgentAuditRecorderTest {
 		assertThat(rowA).containsEntry("user_prompt_id", "inv-A").containsEntry("session_id", "session-A");
 		assertThat(rowB).containsEntry("user_prompt_id", "inv-B").containsEntry("session_id", "session-B");
 	}
+
+	@Test
+	void tokenColumns_includeCachedAndThinkingTokens() {
+		BigQuery bigQuery = mock(BigQuery.class);
+		InsertAllResponse ok = mock(InsertAllResponse.class);
+		when(ok.hasErrors()).thenReturn(false);
+		when(bigQuery.insertAll(any(InsertAllRequest.class))).thenReturn(ok);
+		AgentAuditRecorder recorder = new AgentAuditRecorder(bigQuery, new com.fasterxml.jackson.databind.ObjectMapper());
+		CallbackContext ctx = ctx("alice", "session-A", "inv-A");
+
+		recorder.beforeModelCallback(ctx, LlmRequest.builder());
+		recorder.afterModelCallback(
+				ctx,
+				com.google.adk.models.LlmResponse.builder()
+						.usageMetadata(
+								com.google.genai.types.GenerateContentResponseUsageMetadata.builder()
+										.promptTokenCount(100)
+										.cachedContentTokenCount(40)
+										.candidatesTokenCount(10)
+										.thoughtsTokenCount(25)
+										.build())
+						.build());
+		recorder.finalizeTurn("alice", "session-A", "agent1", "agent2", "", "reply", 1, "SUCCESS", null);
+
+		ArgumentCaptor<InsertAllRequest> captor = ArgumentCaptor.forClass(InsertAllRequest.class);
+		verify(bigQuery).insertAll(captor.capture());
+		assertThat(captor.getValue().getRows().get(0).getContent())
+				.containsEntry("agent1_prompt_tokens", 100)
+				.containsEntry("agent1_cached_tokens", 40)
+				.containsEntry("agent1_completion_tokens", 10)
+				.containsEntry("agent1_thinking_tokens", 25);
+	}
 }

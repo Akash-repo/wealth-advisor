@@ -39,6 +39,11 @@ import org.springframework.stereotype.Component;
  * {@code Runner} and threaded through every sub-agent in a {@code SequentialAgent}, which is
  * exactly the "one id per user prompt" concept this table's {@code user_prompt_id} column needs.
  *
+ * <p>Token counts are kept both per call (inside the JSON) and summed per agent in their own
+ * columns: prompt, cached (a subset of prompt, served from Gemini's cache), completion (the visible
+ * answer) and thinking (hidden reasoning, billed like output, not part of completion). The
+ * token-usage views roll these up per session, user and day.
+ *
  * <p>Why one agent can have more than one LLM call per turn: if {@code portfolio_analysis}
  * decides to call {@code getPortfolioAllocation}, that's two round-trips to Gemini for that one agent —
  * a first call where the model asks to invoke the tool, then (after the tool runs) a second call
@@ -107,7 +112,30 @@ public class AgentAuditRecorder implements Plugin {
 			@JsonRawValue String responseJson,
 			long latencyMs,
 			Integer promptTokens,
-			Integer completionTokens) {}
+			Integer cachedTokens,
+			Integer completionTokens,
+			Integer thinkingTokens) {}
+
+	/**
+	 * Token counts from one Gemini response. {@code cached} is the part of {@code prompt} served from
+	 * Gemini's cache (a subset, not additional); {@code thinking} is the model's hidden reasoning,
+	 * which is billed like output but is <em>not</em> included in {@code completion}.
+	 */
+	private record Usage(Integer prompt, Integer cached, Integer completion, Integer thinking) {
+
+		static Usage of(LlmResponse response) {
+			return response
+					.usageMetadata()
+					.map(
+							u ->
+									new Usage(
+											u.promptTokenCount().orElse(null),
+											u.cachedContentTokenCount().orElse(null),
+											u.candidatesTokenCount().orElse(null),
+											u.thoughtsTokenCount().orElse(null)))
+					.orElse(new Usage(null, null, null, null));
+		}
+	}
 
 	@Override
 	public String getName() {
@@ -140,12 +168,7 @@ public class AgentAuditRecorder implements Plugin {
 		long latencyMs =
 				pending == null ? -1 : (System.nanoTime() - pending.startNanos) / 1_000_000;
 
-		Integer promptTokens = null;
-		Integer completionTokens = null;
-		if (response.usageMetadata().isPresent()) {
-			promptTokens = response.usageMetadata().get().promptTokenCount().orElse(null);
-			completionTokens = response.usageMetadata().get().candidatesTokenCount().orElse(null);
-		}
+		Usage usage = Usage.of(response);
 
 		turn.callsByAgent
 				.computeIfAbsent(ctx.agentName(), a -> new ArrayList<>())
@@ -154,8 +177,10 @@ public class AgentAuditRecorder implements Plugin {
 								pending == null ? null : pending.requestJson,
 								response.toJson(),
 								latencyMs,
-								promptTokens,
-								completionTokens));
+								usage.prompt(),
+								usage.cached(),
+								usage.completion(),
+								usage.thinking()));
 		return Maybe.empty();
 	}
 
@@ -229,8 +254,10 @@ public class AgentAuditRecorder implements Plugin {
 		row.put(
 				columnPrefix + "_latency_ms", safeCalls.stream().mapToLong(RoundTrip::latencyMs).sum());
 		row.put(columnPrefix + "_prompt_tokens", sumNullable(safeCalls, RoundTrip::promptTokens));
+		row.put(columnPrefix + "_cached_tokens", sumNullable(safeCalls, RoundTrip::cachedTokens));
 		row.put(
 				columnPrefix + "_completion_tokens", sumNullable(safeCalls, RoundTrip::completionTokens));
+		row.put(columnPrefix + "_thinking_tokens", sumNullable(safeCalls, RoundTrip::thinkingTokens));
 	}
 
 	private static Integer sumNullable(

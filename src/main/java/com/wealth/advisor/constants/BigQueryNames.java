@@ -14,4 +14,7 @@ public final class BigQueryNames {
 	public static final String TOOL_INVOCATIONS = "tool_invocations";
 	public static final String TOOL_REGISTRY_EVENTS = "tool_registry_events";
 	public static final String TOOL_REGISTRY_VIEW = "tool_registry";
+	public static final String TOKEN_USAGE_BY_SESSION = "token_usage_by_session";
+	public static final String TOKEN_USAGE_BY_USER = "token_usage_by_user";
+	public static final String TOKEN_USAGE_BY_DAY = "token_usage_by_day";
 }
