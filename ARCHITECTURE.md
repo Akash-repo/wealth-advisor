@@ -237,21 +237,23 @@ per-message.)*
 ### 2. Document upload (RAG ingestion + holdings extraction)
 
 Upload is optional (chat works without it — `searchPortfolio`/`getPortfolioHoldings` just report
-`found: false`), and a user can upload any number of documents of any type — brokerage statements
-from multiple accounts, a resume, a bank statement. See [Portfolio holdings](#portfolio-holdings)
-for the full design.
+`found: false`), and a user can upload any number of **portfolio statements** — typically one per
+brokerage account. Anything that is not a portfolio statement (a resume, a bank statement) is
+rejected at upload. See [Portfolio holdings](#portfolio-holdings) for the full design.
 
-1. Authenticated `POST /api/portfolio/upload` (multipart, `file` + `documentType`) hits
+1. Authenticated `POST /api/portfolio/upload` (multipart, `file` only) hits
    `PortfolioController`, once per file — the frontend loops over however many files were selected.
 2. `PortfolioIngestionService.ingest`:
-   - Extracts text from the PDF (PDFBox's `Loader.loadPDF` + `PDFTextStripper`).
-   - Splits it into ~250-word chunks (`TextChunker`), embeds each (`EmbeddingService`, Gemini
-     `text-embedding-004`), writes them to `portfolio_vectors` — unchanged from before, and
+   - Extracts text from the PDF (PDFBox's `Loader.loadPDF` + `PDFTextStripper`). A file that can't
+     be read as a PDF, or has no text (a scanned image), is rejected with **HTTP 422**.
+   - Runs `HoldingsExtractionService` over the text **first** to pull out structured holdings
+     (ticker, shares, cost basis, account). **No holdings found means it is not a portfolio
+     statement: HTTP 422, and nothing has been embedded or stored.** This is how "statements only"
+     is enforced — by outcome, since a client-supplied type label proves nothing.
+   - Only then splits the text into ~250-word chunks (`TextChunker`), embeds each
+     (`EmbeddingService`, Gemini `text-embedding-004`) and writes them to `portfolio_vectors` —
      **additive**: a new upload never deletes a prior one's chunks, so multiple brokerage
-     statements coexist and all contribute to RAG search.
-   - Runs `HoldingsExtractionService` over the same extracted text to pull out structured holdings
-     (ticker, shares, cost basis, account), written to `portfolio_holdings` — a resume or bank
-     statement just yields zero holdings, not an error.
+     statements coexist and all contribute to RAG search. The holdings go to `portfolio_holdings`.
    - Writes one `portfolio_documents` metadata record for this upload (so it can be listed/deleted
      as a unit — see `DELETE /api/portfolio/documents/{filename}`).
    - Sets `users/{userId}.hasUploadedPortfolio = true`.
@@ -333,7 +335,7 @@ docs here, summed in Java by `PortfolioHoldingsTool`, not derived from prose chu
 | *(doc id)*        | auto-generated |                                                              |
 | `userId`           | string    | indexed                                                          |
 | `filename`          | string    |                                                                   |
-| `documentType`       | string    | `brokerage` / `resume` / `bank_statement` / `other` — metadata only, doesn't change how it's processed |
+| `documentType`       | string    | always `brokerage` for new uploads; older documents may still carry `resume` / `bank_statement` / `other` (no longer accepted) |
 | `chunkCount`          | number    |                                                                   |
 | `holdingsCount`         | number    |                                                                   |
 | `uploadedAt`             | timestamp |                                                                   |
@@ -387,10 +389,10 @@ We don't write to any of this directly — it's entirely managed by
 
 ## Portfolio holdings
 
-Originally a user could upload exactly one portfolio PDF. Now uploads are optional, a user can
-upload any number of documents of any kind (multiple brokerage statements — Vanguard, Fidelity,
-Robinhood, ... — plus non-brokerage documents like a resume or bank statement for extra context),
-and each can be deleted individually. See `PortfolioController`'s `GET`/`DELETE
+Originally a user could upload exactly one portfolio PDF. Now uploads are optional and a user can
+upload any number of **portfolio statements** (Vanguard, Fidelity, Robinhood, ... — one per
+account); other document kinds (a resume, a bank statement) are rejected, and each statement can
+be deleted individually. See `PortfolioController`'s `GET`/`DELETE
 /api/portfolio/documents/...` and the multi-file upload UI in `index.html`.
 
 **The problem this solves — RAG chunk retrieval alone can't answer aggregation questions
@@ -445,11 +447,11 @@ cascade actually removes `portfolio_holdings` rows, not just the metadata record
    `portfolio_vectors`/`portfolio_holdings` directly.** Rejected — Firestore doesn't cheaply do
    "distinct filenames for this user," and deriving delete targets from scattered chunk rows is
    both slower and more error-prone than one purpose-built metadata record per upload.
-5. **Auto-detect `documentType` from content instead of asking the user to pick one at upload.**
-   Rejected for now — `documentType` is currently metadata-only (doesn't change how a document is
-   processed; every type goes through the same chunk+embed+extract pipeline), so auto-detection
-   would add a real LLM call for a value that isn't yet load-bearing anywhere. Worth revisiting if
-   `documentType` ever starts influencing retrieval behavior.
+5. **A user-chosen `documentType` at upload.** *(Superseded.)* This was metadata-only and
+   client-controlled, so it could not enforce anything. Uploads are now statements-only and the
+   check is by outcome: the holdings extraction that already runs must find at least one holding,
+   otherwise the file is rejected (HTTP 422) before anything is stored. No extra LLM call was
+   needed — it reuses the existing extraction.
 
 ### Portfolio allocation (value + weight, not just share count)
 
@@ -1186,10 +1188,10 @@ These aren't documented anywhere obvious — found by actually running the app, 
    24h Firestore cache shared across every user. The one non-ADC credential in this app
    (`FMP_API_KEY`); log-forging guardrails (`com.wealth.advisor.guardrails.ContentSanitizer`)
    added alongside it.
-8. ✅ Optional, multi-file, multi-type portfolio uploads + exact holdings aggregation (see
+8. ✅ Optional, multi-file portfolio-statement uploads + exact holdings aggregation (see
    [Portfolio holdings](#portfolio-holdings)) — upload is no longer required or limited to one
-   file; any number of brokerage statements, resumes, or bank statements can be uploaded and
-   individually deleted. `HoldingsExtractionService` + `portfolio_holdings` +
+   file; any number of brokerage statements can be uploaded and individually deleted (resumes and
+   bank statements are rejected). `HoldingsExtractionService` + `portfolio_holdings` +
    `PortfolioHoldingsTool.getPortfolioHoldings` solve exact cross-account aggregation (e.g. total
    GOOG shares across 3 brokerages) in a way chunk-based RAG retrieval structurally can't
    guarantee. Per-user isolation is unchanged — every new collection/query still scopes by

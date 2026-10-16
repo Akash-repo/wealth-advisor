@@ -78,7 +78,7 @@ model sees is rebuilt from the session's events on every model call.
 | `GET /api/sessions` | required | `ChatController.sessions` | ADK `listSessions` + per-session `getSession` for titles | 200 list | 401 |
 | `GET /api/sessions/{id}/messages` | required | `ChatController.messages` | ADK `getSession` | 200 list | 401, 404 |
 | `DELETE /api/sessions/{id}` | required | `ChatController.deleteSession` | ADK `deleteSession` | 204 | 401, 404 |
-| `POST /api/portfolio/upload` | required | `PortfolioController` → `PortfolioIngestionService.ingest` | section 7 | 200 `{filename, chunksStored}` | 401, 500 |
+| `POST /api/portfolio/upload` | required | `PortfolioController` → `PortfolioIngestionService.ingest` | section 7 | 200 `{filename, chunksStored}` | 401, **422** (not a portfolio statement), 500 |
 | `GET /api/portfolio/documents` | required | `PortfolioController` | Firestore `portfolio_documents` | 200 list | 401, 500 |
 | `DELETE /api/portfolio/documents/{filename}` | required | `PortfolioController` | batch delete in 3 collections | 200 | 401, 500 |
 | anything else, unauthenticated | — | entry point | — | `/api/**` → **401**; pages → **302** to `/login.html` | — |
@@ -281,6 +281,9 @@ model cannot ask for another user's data.
 
 ## 7. Document upload flow
 
+Only **portfolio statements** are accepted. The check is by outcome: holdings are extracted
+**before** anything is embedded or stored, and a file with none is rejected.
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -289,42 +292,58 @@ sequenceDiagram
     participant PC as PortfolioController
     participant IS as PortfolioIngestionService
     participant PDF as PDFBox
-    participant E as EmbeddingService
     participant H as HoldingsExtractionService
+    participant E as EmbeddingService
     participant G as Vertex AI
     participant F as Firestore
 
-    B->>S: POST /api/portfolio/upload (multipart file + documentType)
+    B->>S: POST /api/portfolio/upload (multipart, file only)
     S->>PC: authenticated
-    PC->>IS: ingest(userId, filename, bytes, documentType)
+    PC->>IS: ingest(userId, filename, bytes)
     IS->>PDF: extract text
-    PDF-->>IS: full text
-    IS->>IS: TextChunker (about 250 words per chunk)
-    loop each chunk
-        IS->>E: embed(chunk)
-        E->>G: embedContent
-        G-->>E: 768-d vector
-        IS->>F: add portfolio_vectors {userId, filename, chunkText, embedding}
+    alt not a readable PDF, or no text
+        PDF-->>IS: error or blank
+        IS-->>PC: InvalidPortfolioDocumentException
+        PC-->>B: 422 {error}  (nothing stored)
+    else text extracted
+        IS->>H: extract(text)
+        H->>G: generateContent (structured JSON of holdings)
+        G-->>H: holdings JSON
+        alt no holdings found
+            IS-->>PC: InvalidPortfolioDocumentException
+            PC-->>B: 422 {error: not a portfolio statement}  (nothing stored)
+        else holdings found
+            IS->>IS: TextChunker (about 250 words per chunk)
+            loop each chunk
+                IS->>E: embed(chunk)
+                E->>G: embedContent
+                G-->>E: 768-d vector
+                IS->>F: add portfolio_vectors {userId, filename, chunkText, embedding}
+            end
+            loop each holding
+                IS->>F: add portfolio_holdings {userId, filename, ticker, shares, ...}
+            end
+            IS->>F: set portfolio_documents metadata (documentType brokerage)
+            IS->>F: users/{userId}.hasUploadedPortfolio = true
+            IS-->>PC: chunk count
+            PC-->>B: 200 {filename, chunksStored}
+        end
     end
-    IS->>H: extract(text)
-    H->>G: generateContent (structured JSON of holdings)
-    G-->>H: holdings JSON
-    loop each holding
-        IS->>F: add portfolio_holdings {userId, filename, ticker, shares, ...}
-    end
-    IS->>F: set portfolio_documents metadata
-    IS->>F: users/{userId}.hasUploadedPortfolio = true
-    IS-->>PC: chunk count
-    PC-->>B: 200 {filename, chunksStored}
 ```
 
 Delete (`DELETE /api/portfolio/documents/{filename}`) runs three batched deletes filtered by
 `userId` and `filename`: `portfolio_vectors`, `portfolio_holdings`, `portfolio_documents`.
 
-Failure behavior: a non-PDF, a Vertex error or a Firestore error throws and returns 500. The writes
-above are **not transactional**, so a failure part-way through can leave earlier chunks stored
-(not exercised in testing). No explicit upload size limit is configured; Spring's multipart
-default applies.
+Failure behavior:
+
+| Situation | Result |
+|---|---|
+| Not a PDF, corrupt or password protected | 422 with a user-readable message; nothing stored |
+| PDF with no text (scanned image) | 422; nothing stored |
+| No holdings found (resume, bank statement, anything else) | 422; nothing stored, no embeddings requested |
+| Vertex or Firestore error after validation | 500; the writes are **not transactional**, so a failure part-way through the chunk and holding writes can leave earlier rows behind (not exercised in testing) |
+
+No explicit upload size limit is configured; Spring's multipart default applies.
 
 ---
 
