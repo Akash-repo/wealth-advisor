@@ -613,6 +613,11 @@ per user chat turn in `wealth_agent.agent_audit_log`, created on startup if miss
 `AuditSchemaInitializer` (same "seed what's missing, warn and keep going if unreachable" pattern
 as `DemoUserSeeder`).
 
+> **Data-model decision (2026-10-16):** the wide row per turn is kept as is. It is about 98 KB per turn
+> (14 MB for 143 rows) because every model call stores its full request again; that is accepted at
+> the current volume. The measured numbers, the rejected options, small fixes that stay inside this
+> design and the conditions for revisiting it are in `docs/design/02-analytics-data-model.md`.
+
 **Why BigQuery and not Cloud SQL or just log lines:** serverless (billed per query/storage, not
 per hour like an always-on Cloud SQL instance), the free tier (10GB storage + 1TB queries/month)
 comfortably covers this project's scale, and its native `JSON` column type means the raw
