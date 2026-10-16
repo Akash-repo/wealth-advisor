@@ -1,11 +1,13 @@
 package com.wealth.advisor.web;
 
+import com.wealth.advisor.portfolio.InvalidPortfolioDocumentException;
 import com.wealth.advisor.portfolio.PortfolioIngestionService;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -22,10 +24,13 @@ import org.springframework.web.multipart.MultipartFile;
  * are more than just prose chunking now.
  *
  * <pre>{@code
- * POST /api/portfolio/upload   (multipart/form-data, fields "file" and optional "documentType")
+ * POST /api/portfolio/upload   (multipart/form-data, field "file" — a portfolio statement PDF)
  *
  * 200 OK
  * { "filename": "statement.pdf", "chunksStored": 4 }
+ *
+ * 422 Unprocessable Entity   (not a readable PDF, no text, or no holdings found; nothing is stored)
+ * { "error": "This doesn't look like a portfolio statement: ..." }
  *
  * GET /api/portfolio/documents
  * 200 OK
@@ -47,21 +52,20 @@ public class PortfolioController {
 	}
 
 	@PostMapping("/api/portfolio/upload")
-	public Map<String, Object> upload(
-			@RequestParam("file") MultipartFile file,
-			@RequestParam(value = "documentType", defaultValue = "other") String documentType,
-			Authentication authentication)
-			throws IOException {
+	public ResponseEntity<Map<String, Object>> upload(
+			@RequestParam("file") MultipartFile file, Authentication authentication) throws IOException {
 		String userId = authentication.getName();
 		log.info(
-				"POST /api/portfolio/upload for userId='{}': filename='{}', size={} bytes, type={}",
+				"POST /api/portfolio/upload for userId='{}': filename='{}', size={} bytes",
 				userId,
 				file.getOriginalFilename(),
-				file.getSize(),
-				documentType);
-		int chunkCount =
-				portfolioIngestionService.ingest(userId, file.getOriginalFilename(), file.getBytes(), documentType);
-		return Map.of("filename", file.getOriginalFilename(), "chunksStored", chunkCount);
+				file.getSize());
+		try {
+			int chunkCount = portfolioIngestionService.ingest(userId, file.getOriginalFilename(), file.getBytes());
+			return ResponseEntity.ok(Map.of("filename", file.getOriginalFilename(), "chunksStored", chunkCount));
+		} catch (InvalidPortfolioDocumentException e) {
+			return ResponseEntity.unprocessableEntity().body(Map.of("error", e.getMessage()));
+		}
 	}
 
 	@GetMapping("/api/portfolio/documents")

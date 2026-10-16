@@ -46,9 +46,9 @@ public class HoldingsExtractionService {
 	/**
 	 * @param documentText the full extracted text of an uploaded document
 	 * @return one map per holding found ({@code ticker}, {@code shares}, {@code costBasis}
-	 *     (nullable), {@code account} (nullable)) — an empty list for documents with no holdings
-	 *     (a resume, a bank statement) rather than an error, since not every uploaded document is
-	 *     expected to contain any
+	 *     (nullable), {@code account} (nullable)) — an empty list for a document with no holdings
+	 *     (the caller decides whether that is acceptable: uploads reject it as "not a portfolio
+	 *     statement")
 	 */
 	public List<Map<String, Object>> extract(String documentText) {
 		try {

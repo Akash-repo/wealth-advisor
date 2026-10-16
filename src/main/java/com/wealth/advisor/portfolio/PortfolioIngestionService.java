@@ -20,34 +20,39 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /**
- * Implements FR-2 of the design doc: parses an uploaded document, splits it into ~250-word chunks
- * (see {@link TextChunker}), embeds each chunk, and stores them in the {@code portfolio_vectors}
- * Firestore collection for {@link com.wealth.advisor.agent.tool.PortfolioSearchTool} to search
- * later. This is the "write" half of this app's RAG pipeline — {@code PortfolioSearchTool} is the
- * "read" half.
+ * Implements FR-2 of the design doc: parses an uploaded <strong>portfolio statement</strong>,
+ * splits it into ~250-word chunks (see {@link TextChunker}), embeds each chunk, and stores them in
+ * the {@code portfolio_vectors} Firestore collection for {@link
+ * com.wealth.advisor.agent.tool.PortfolioSearchTool} to search later. This is the "write" half of
+ * this app's RAG pipeline — {@code PortfolioSearchTool} is the "read" half.
  *
- * <p>For brokerage-statement-shaped documents specifically, also runs {@link
- * HoldingsExtractionService} to pull out structured {@code portfolio_holdings} records (ticker,
- * shares, cost basis, account) alongside the prose chunks — see {@code ARCHITECTURE.md}'s
- * "Portfolio holdings" section for why exact aggregation across multiple brokerage accounts (e.g.
- * "how much GOOG do I hold in total") needs this instead of relying on RAG's top-K chunk
- * retrieval, which has no guarantee of retrieving *every* chunk that mentions a ticker.
+ * <p>Only portfolio statements are accepted. The structured holdings are extracted <em>first</em>
+ * ({@link HoldingsExtractionService}: ticker, shares, cost basis, account) and a document with no
+ * holdings in it (a resume, a bank statement, a scanned image) is rejected with {@link
+ * InvalidPortfolioDocumentException} <em>before anything is embedded or stored</em> — so a bad
+ * upload costs one extraction call and leaves no partial data behind. See {@code ARCHITECTURE.md}'s
+ * "Portfolio holdings" section for why exact aggregation across several brokerage accounts (e.g.
+ * "how much GOOG do I hold in total") needs structured holdings instead of relying on RAG's top-K
+ * chunk retrieval, which has no guarantee of retrieving *every* chunk that mentions a ticker.
+ * Several statements per user (one per account) are still supported.
  *
  * <p>One {@code portfolio_documents} metadata doc is written per upload (not per chunk) so
  * uploaded documents can be listed and deleted as a unit — see {@link #deleteDocument}.
  *
  * <pre>{@code
- * int chunksStored = portfolioIngestionService.ingest(
- *     "demo", "vanguard-statement.pdf", pdfBytes, "brokerage");
- * // -> parses the PDF, writes N chunks to portfolio_vectors, any holdings found to
- * //    portfolio_holdings, one portfolio_documents record, sets
- * //    users/demo.hasUploadedPortfolio = true, and returns N
+ * int chunksStored = portfolioIngestionService.ingest("demo", "vanguard-statement.pdf", pdfBytes);
+ * // -> parses the PDF and extracts holdings (rejecting the file if there are none), then writes
+ * //    N chunks to portfolio_vectors, the holdings to portfolio_holdings, one
+ * //    portfolio_documents record, sets users/demo.hasUploadedPortfolio = true, and returns N
  * }</pre>
  */
 @Service
 public class PortfolioIngestionService {
 
 	private static final Logger log = LoggerFactory.getLogger(PortfolioIngestionService.class);
+
+	/** Every accepted upload is a portfolio statement; the field is kept so existing documents list uniformly. */
+	private static final String DOCUMENT_TYPE = "brokerage";
 
 	private final Firestore firestore;
 	private final EmbeddingService embeddingService;
@@ -61,32 +66,32 @@ public class PortfolioIngestionService {
 	}
 
 	/**
-	 * @param documentType a free-form label like {@code brokerage}, {@code resume}, or {@code
-	 *     bank_statement} — stored as metadata only; every document type goes through the same
-	 *     chunk+embed and holdings-extraction steps (a resume just yields zero holdings)
 	 * @return the number of chunks stored
+	 * @throws InvalidPortfolioDocumentException if the file can't be read as a PDF, has no text, or
+	 *     contains no holdings — nothing is stored in that case
 	 */
-	public int ingest(String userId, String filename, byte[] pdfBytes, String documentType) throws IOException {
-		log.info(
-				"Ingesting document '{}' ({} bytes, type={}) for userId='{}'",
-				filename,
-				pdfBytes.length,
-				documentType,
-				userId);
+	public int ingest(String userId, String filename, byte[] pdfBytes) {
+		log.info("Ingesting statement '{}' ({} bytes) for userId='{}'", filename, pdfBytes.length, userId);
 
-		String text = extractText(pdfBytes);
+		String text = readText(pdfBytes);
+		List<Map<String, Object>> holdings = holdingsExtractionService.extract(text);
+		if (holdings.isEmpty()) {
+			log.info("Rejected '{}' for userId='{}': no holdings found", filename, userId);
+			throw new InvalidPortfolioDocumentException(
+					"This doesn't look like a portfolio statement: no holdings were found in it. "
+							+ "Please upload a brokerage or portfolio statement PDF.");
+		}
+
 		List<String> chunks = TextChunker.chunk(text);
 		log.debug("Split '{}' into {} chunk(s)", filename, chunks.size());
 		for (String chunk : chunks) {
 			writeChunk(userId, filename, chunk, embeddingService.embed(chunk));
 		}
-
-		List<Map<String, Object>> holdings = holdingsExtractionService.extract(text);
 		for (Map<String, Object> holding : holdings) {
 			writeHolding(userId, filename, holding);
 		}
 
-		writeDocumentMetadata(userId, filename, documentType, chunks.size(), holdings.size());
+		writeDocumentMetadata(userId, filename, DOCUMENT_TYPE, chunks.size(), holdings.size());
 		markPortfolioUploaded(userId);
 		log.info(
 				"Finished ingesting '{}' for userId='{}': {} chunk(s), {} holding(s)",
@@ -95,6 +100,22 @@ public class PortfolioIngestionService {
 				chunks.size(),
 				holdings.size());
 		return chunks.size();
+	}
+
+	private static String readText(byte[] pdfBytes) {
+		String text;
+		try {
+			text = extractText(pdfBytes);
+		} catch (IOException e) {
+			throw new InvalidPortfolioDocumentException(
+					"That file couldn't be read as a PDF. It may be corrupted or password protected.");
+		}
+		if (text.isBlank()) {
+			throw new InvalidPortfolioDocumentException(
+					"No readable text was found in that PDF (is it a scanned image?). "
+							+ "Please upload a statement with selectable text.");
+		}
+		return text;
 	}
 
 	/** Lists this user's uploaded documents (metadata only, newest first). */
