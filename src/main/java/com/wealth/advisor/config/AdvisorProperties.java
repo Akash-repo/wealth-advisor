@@ -28,8 +28,8 @@ public record AdvisorProperties(
 		@NotNull @Valid Compaction compaction,
 		@NotNull @Valid Memory memory) {
 
-	/** Which Gemini / embedding model each job uses. */
-	public record Model(@NotBlank String chat, @NotBlank String extraction, @NotBlank String embedding) {}
+	/** Which Gemini model each job uses. */
+	public record Model(@NotBlank String chat, @NotBlank String extraction) {}
 
 	/** Per-user chat limits and session-list bounds. */
 	public record Chat(

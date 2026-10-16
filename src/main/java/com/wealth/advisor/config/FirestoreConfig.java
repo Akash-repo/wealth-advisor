@@ -8,8 +8,8 @@ import org.springframework.context.annotation.Configuration;
 
 /**
  * Provides the single {@link Firestore} client this whole app shares — for user accounts (auth,
- * see {@code FirestoreUserDetailsService}), portfolio vectors ({@code PortfolioIngestionService},
- * {@code PortfolioSearchTool}), and ADK's own conversation sessions ({@code
+ * see {@code FirestoreUserDetailsService}), uploaded statements and their holdings ({@code
+ * PortfolioStatementStore}), and ADK's own conversation sessions ({@code
  * FirestoreSessionService}, wired up directly in {@code AgentChatService}).
  *
  * <p>No credentials are configured here explicitly — {@code FirestoreOptions} resolves them the
@@ -18,7 +18,7 @@ import org.springframework.context.annotation.Configuration;
  * output (ADC — what this project actually uses locally), or (on Cloud Run/GCE) the metadata
  * server's attached service account. Set {@code FIRESTORE_EMULATOR_HOST=localhost:8080} instead
  * to talk to a local emulator — no real credentials needed then (see {@code
- * application-local.properties} for how to start one).
+ * application-local.yml} for how to start one).
  */
 @Configuration
 public class FirestoreConfig {

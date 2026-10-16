@@ -18,13 +18,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * Exact holdings totals across every brokerage account a user has uploaded a statement for — the
- * complement to {@link PortfolioSearchTool}'s prose RAG search. See {@code ARCHITECTURE.md}'s
- * "Portfolio holdings" section for why this exists as a separate, structured-data tool: RAG's
- * top-K chunk retrieval has no guarantee of finding *every* chunk that mentions a given ticker, so
- * "how much GOOG do I hold in total across Vanguard, Fidelity, and Robinhood" needs a real,
- * exhaustive Firestore query summed in plain Java — not an LLM adding up numbers it happened to
- * retrieve.
+ * Exact holdings totals across every brokerage account a user has uploaded a statement for.
+ * "How much GOOG do I hold in total across Vanguard, Fidelity, and Robinhood" is answered by a
+ * real, exhaustive Firestore query summed in plain Java — never by an LLM adding up numbers.
+ * See {@code ARCHITECTURE.md}'s "Portfolio holdings" section.
  *
  * <p><strong>Gotcha:</strong> {@code ticker} must be marked {@code @Schema(..., optional = true)}
  * — {@code Annotations.Schema} defaults {@code optional()} to {@code false}, and when a parameter
@@ -36,8 +33,8 @@ import org.springframework.stereotype.Component;
  * ticker in mind) reliably failed this way until {@code optional = true} was added.
  *
  * <p>Reads {@code portfolio_holdings}, written by {@link
- * com.wealth.advisor.portfolio.HoldingsExtractionService} at upload time — one document per
- * holding-per-account, never derived from chunk text at query time.
+ * com.wealth.advisor.portfolio.PortfolioStatementStore} at upload time — one document per
+ * holding-per-account.
  */
 @Component
 public class PortfolioHoldingsTool {
@@ -54,8 +51,7 @@ public class PortfolioHoldingsTool {
 			description =
 					"Returns the user's exact stock/ETF holdings, summed across every brokerage account"
 							+ " they've uploaded a statement for. Use this for \"how much of X do I hold in"
-							+ " total\" or \"what are all my holdings\" — not searchPortfolio, which can miss"
-							+ " holdings split across multiple uploaded documents.")
+							+ " total\" or \"what are all my holdings\".")
 	public Map<String, Object> getPortfolioHoldings(
 			@Schema(
 							name = "ticker",

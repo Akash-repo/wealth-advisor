@@ -42,7 +42,7 @@ class AdvisorPropertiesTest {
 
 		assertThat(VALIDATOR.validate(p)).isEmpty();
 		assertThat(p.model().chat()).isEqualTo("gemini-2.5-flash");
-		assertThat(p.model().embedding()).isEqualTo("text-embedding-004");
+		assertThat(p.model().extraction()).isEqualTo("gemini-2.5-flash");
 		assertThat(p.chat().maxRequestsPerMinute()).isEqualTo(20);
 		assertThat(p.compaction().tokenThreshold()).isEqualTo(50_000);
 		assertThat(p.compaction().eventRetentionSize()).isEqualTo(20);

@@ -11,7 +11,7 @@ public final class TestProperties {
 
 	public static AdvisorProperties defaults() {
 		return new AdvisorProperties(
-				new AdvisorProperties.Model("gemini-2.5-flash", "gemini-2.5-flash", "text-embedding-004"),
+				new AdvisorProperties.Model("gemini-2.5-flash", "gemini-2.5-flash"),
 				new AdvisorProperties.Chat(20, 50, 60),
 				new AdvisorProperties.Compaction(50_000, 20),
 				new AdvisorProperties.Memory(8, 500));

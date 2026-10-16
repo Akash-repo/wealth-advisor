@@ -8,7 +8,6 @@ import com.wealth.advisor.agent.AgentChatService;
 import com.wealth.advisor.agent.prompt.PromptLoader;
 import com.wealth.advisor.agent.tool.PortfolioAllocationTool;
 import com.wealth.advisor.agent.tool.PortfolioHoldingsTool;
-import com.wealth.advisor.agent.tool.PortfolioSearchTool;
 import com.wealth.advisor.agent.tool.StockLookupTool;
 import com.wealth.advisor.audit.AgentAuditRecorder;
 import com.wealth.advisor.audit.ToolUsageRecorder;
@@ -36,13 +35,11 @@ import org.springframework.context.annotation.Configuration;
 public class AgentConfig {
 
 	/**
-	 * First stage: reads the conversation so far and the user's actual holdings (via {@link
-	 * PortfolioSearchTool}'s RAG search over their uploaded PDF), and produces a short analysis for
-	 * the next agent to act on.
+	 * First stage: reads the conversation so far and the user's actual holdings and market data (via
+	 * its tools), and produces a short analysis for the next agent to act on.
 	 */
 	@Bean
 	public LlmAgent portfolioAnalysisAgent(
-			PortfolioSearchTool portfolioSearchTool,
 			PortfolioHoldingsTool portfolioHoldingsTool,
 			PortfolioAllocationTool portfolioAllocationTool,
 			StockLookupTool stockLookupTool,
@@ -59,7 +56,6 @@ public class AgentConfig {
 				.instruction(promptLoader.load("portfolio_analysis").text())
 				.tools(
 						FunctionTool.create(stockLookupTool, "getStockData"),
-						FunctionTool.create(portfolioSearchTool, "searchPortfolio"),
 						FunctionTool.create(portfolioHoldingsTool, "getPortfolioHoldings"),
 						FunctionTool.create(portfolioAllocationTool, "getPortfolioAllocation"),
 						// Long-term memory: keyword search over this user's events across ALL their

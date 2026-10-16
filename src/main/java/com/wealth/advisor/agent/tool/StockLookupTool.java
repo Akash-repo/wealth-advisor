@@ -10,7 +10,7 @@ import org.springframework.stereotype.Component;
  * ARCHITECTURE.md}'s "Real market data" section for the full design.
  *
  * <p>Spring-managed instance tool (constructor-injected with {@link MarketDataService}), same
- * shape as {@link PortfolioSearchTool} — registered in {@code AgentConfig} with the {@code
+ * shape as {@link PortfolioHoldingsTool} — registered in {@code AgentConfig} with the {@code
  * instance, "..."} overload, not {@code Class, "..."}:
  *
  * <pre>{@code

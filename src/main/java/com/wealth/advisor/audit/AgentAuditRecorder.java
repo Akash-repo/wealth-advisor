@@ -44,7 +44,7 @@ import org.springframework.stereotype.Component;
  * exactly the "one id per user prompt" concept this table's {@code user_prompt_id} column needs.
  *
  * <p>Why one agent can have more than one LLM call per turn: if {@code portfolio_analysis}
- * decides to call {@code searchPortfolio}, that's two round-trips to Gemini for that one agent —
+ * decides to call {@code getPortfolioAllocation}, that's two round-trips to Gemini for that one agent —
  * a first call where the model asks to invoke the tool, then (after the tool runs) a second call
  * where the model reacts to the tool's result. Both get captured, in order, in that agent's
  * {@code *_llm_calls} JSON array.

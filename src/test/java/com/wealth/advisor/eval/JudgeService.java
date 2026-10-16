@@ -28,7 +28,7 @@ import org.springframework.boot.test.context.TestComponent;
  * app, without shipping in production.
  *
  * <p>Reuses the plain {@code genai} {@link Client} bean ({@code GenAiClientConfig}) — the same one
- * {@code EmbeddingService} and {@code HoldingsExtractionService} already use — and the exact same
+ * {@code HoldingsExtractionService} already uses — and the exact same
  * "constrain Gemini to a JSON {@code responseSchema} instead of parsing free text" pattern {@code
  * HoldingsExtractionService} already established. No new infrastructure, just a new schema.
  *

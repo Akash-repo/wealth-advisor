@@ -11,7 +11,7 @@ import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
  * <p>Start here for the big picture: <a href="../../../../../ARCHITECTURE.md">ARCHITECTURE.md</a>
  * at the repo root explains ADK's core concepts ({@code LlmAgent}, {@code Tool}, {@code
  * Runner}/{@code Session}, {@code SequentialAgent}), the full Firestore schema, and how a chat
- * request flows end to end through this app's two-agent RAG pipeline. Package-level starting
+ * request flows end to end through this app's two-agent pipeline. Package-level starting
  * points once you're in the code:
  *
  * <ul>
@@ -21,9 +21,9 @@ import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
  *       GCP clients.
  *   <li>{@code com.wealth.advisor.agent} — the service that runs a turn ({@code
  *       AgentChatService}), the memory guard, and the prompt loader.
- *   <li>{@code com.wealth.advisor.agent.tool} — the two tools those agents can call.
- *   <li>{@code com.wealth.advisor.portfolio} — PDF parsing, chunking, and embeddings (the RAG
- *       "write" path); {@code com.wealth.advisor.agent.tool.PortfolioSearchTool} is the "read" path.
+ *   <li>{@code com.wealth.advisor.agent.tool} — the tools those agents can call.
+ *   <li>{@code com.wealth.advisor.portfolio} — accepting a portfolio statement: read the PDF,
+ *       extract the holdings, store them ({@code PortfolioService} and its collaborators).
  *   <li>{@code com.wealth.advisor.security} — Spring Security wiring, backed by Firestore.
  *   <li>{@code com.wealth.advisor.web} — the REST controllers tying it all to HTTP.
  * </ul>

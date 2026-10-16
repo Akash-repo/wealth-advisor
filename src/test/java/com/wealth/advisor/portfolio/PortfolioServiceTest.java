@@ -8,7 +8,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-import com.google.cloud.firestore.Firestore;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -22,23 +21,20 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Uploads are portfolio statements only. A rejected file must cost at most one holdings-extraction
- * call and must leave nothing behind — no embeddings requested, no Firestore writes — so these
- * tests assert on what was <em>not</em> touched, not just on the exception.
+ * Uploads are portfolio statements only. A rejected file must leave nothing behind, so the tests
+ * assert on what was <em>not</em> touched (the store), not just on the exception.
  */
-class PortfolioIngestionServiceTest {
+class PortfolioServiceTest {
 
-	private Firestore firestore;
-	private EmbeddingService embeddingService;
-	private HoldingsExtractionService holdingsExtractionService;
-	private PortfolioIngestionService service;
+	private HoldingsExtractionService extraction;
+	private PortfolioStatementStore store;
+	private PortfolioService service;
 
 	@BeforeEach
 	void setUp() {
-		firestore = mock(Firestore.class);
-		embeddingService = mock(EmbeddingService.class);
-		holdingsExtractionService = mock(HoldingsExtractionService.class);
-		service = new PortfolioIngestionService(firestore, embeddingService, holdingsExtractionService);
+		extraction = mock(HoldingsExtractionService.class);
+		store = mock(PortfolioStatementStore.class);
+		service = new PortfolioService(new PdfTextReader(), extraction, store);
 	}
 
 	private static byte[] pdf(String textOrNull) throws IOException {
@@ -60,6 +56,17 @@ class PortfolioIngestionServiceTest {
 	}
 
 	@Test
+	void validStatement_isStoredAndReturnsTheHoldingCount() throws Exception {
+		List<Holding> holdings = List.of(new Holding("AAPL", 10.0, null, null), new Holding("MSFT", 5.0, null, null));
+		when(extraction.extract(anyString())).thenReturn(holdings);
+
+		int stored = service.ingest("alice", "vanguard.pdf", pdf("Holdings: AAPL 10, MSFT 5"));
+
+		assertThat(stored).isEqualTo(2);
+		verify(store).save("alice", "vanguard.pdf", holdings);
+	}
+
+	@Test
 	void notAPdf_isRejectedAndNothingIsTouched() {
 		byte[] notPdf = "just some text, not a pdf".getBytes(StandardCharsets.UTF_8);
 
@@ -67,7 +74,7 @@ class PortfolioIngestionServiceTest {
 				.isInstanceOf(InvalidPortfolioDocumentException.class)
 				.hasMessageContaining("PDF");
 
-		verifyNoInteractions(holdingsExtractionService, embeddingService, firestore);
+		verifyNoInteractions(extraction, store);
 	}
 
 	@Test
@@ -78,25 +85,34 @@ class PortfolioIngestionServiceTest {
 				.isInstanceOf(InvalidPortfolioDocumentException.class)
 				.hasMessageContaining("No readable text");
 
-		verifyNoInteractions(holdingsExtractionService, embeddingService, firestore);
+		verifyNoInteractions(extraction, store);
 	}
 
 	@Test
-	void documentWithNoHoldings_isRejectedBeforeAnythingIsEmbeddedOrStored() throws Exception {
-		byte[] resume = pdf("Jane Doe - Senior Engineer - 10 years of experience");
-		when(holdingsExtractionService.extract(anyString())).thenReturn(List.of());
+	void documentWithNoHoldings_isRejectedAndNothingIsStored() throws Exception {
+		when(extraction.extract(anyString())).thenReturn(List.of());
 
-		assertThatThrownBy(() -> service.ingest("alice", "resume.pdf", resume))
+		assertThatThrownBy(() -> service.ingest("alice", "resume.pdf", pdf("Jane Doe - Senior Engineer")))
 				.isInstanceOf(InvalidPortfolioDocumentException.class)
 				.hasMessageContaining("portfolio statement");
 
-		verify(holdingsExtractionService).extract(anyString());
-		verifyNoInteractions(embeddingService, firestore);
+		verifyNoInteractions(store);
+	}
+
+	@Test
+	void extractionOutage_isAServerErrorNotABlameTheUserRejection() throws Exception {
+		when(extraction.extract(anyString())).thenThrow(new IllegalStateException("Holdings extraction call failed"));
+
+		assertThatThrownBy(() -> service.ingest("alice", "vanguard.pdf", pdf("Holdings: AAPL 10")))
+				.isInstanceOf(IllegalStateException.class)
+				.isNotInstanceOf(InvalidPortfolioDocumentException.class);
+
+		verifyNoInteractions(store);
 	}
 
 	@Test
 	void rejectionMessage_isSafeToShowTheUser() throws Exception {
-		when(holdingsExtractionService.extract(anyString())).thenReturn(List.of());
+		when(extraction.extract(anyString())).thenReturn(List.of());
 
 		assertThatThrownBy(() -> service.ingest("alice", "x.pdf", pdf("Account summary")))
 				.hasMessageNotContaining("Exception")

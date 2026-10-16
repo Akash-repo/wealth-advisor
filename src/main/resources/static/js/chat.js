@@ -61,9 +61,9 @@ uploadForm.addEventListener('submit', async (event) => {
 		const response = await fetch('/api/portfolio/upload', { method: 'POST', body });
 		if (response.status === 401) return handleSessionExpired();
 		if (!response.ok) {
-			// 422 carries a user-readable reason ("doesn't look like a portfolio statement", ...).
+			// 422 carries a user-readable reason in the standard problem-detail field ("doesn't look like a portfolio statement", ...).
 			let reason = '';
-			try { reason = (await response.json()).error || ''; } catch (e) { /* no JSON body */ }
+			try { reason = (await response.json()).detail || ''; } catch (e) { /* no JSON body */ }
 			uploadStatus.textContent = reason
 				? `${file.name} was not added. ${reason}`
 				: `Upload failed for ${file.name}: ${response.status}`;

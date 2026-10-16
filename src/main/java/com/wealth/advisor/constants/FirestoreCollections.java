@@ -11,7 +11,6 @@ public final class FirestoreCollections {
 
 	public static final String USERS = "users";
 	public static final String PORTFOLIO_DOCUMENTS = "portfolio_documents";
-	public static final String PORTFOLIO_VECTORS = "portfolio_vectors";
 	public static final String PORTFOLIO_HOLDINGS = "portfolio_holdings";
 	public static final String MARKET_DATA_CACHE = "market_data_cache";
 }

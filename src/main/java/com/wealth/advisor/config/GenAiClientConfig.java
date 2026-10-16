@@ -6,11 +6,9 @@ import org.springframework.context.annotation.Configuration;
 
 /**
  * A standalone {@code genai} {@link Client}, separate from the one ADK builds internally for
- * {@code LlmAgent}s (that one is private to ADK's {@code Gemini} class). Needed for embeddings,
- * which aren't part of ADK's agent abstraction — {@link
- * com.wealth.advisor.portfolio.PortfolioIngestionService} and {@link
- * com.wealth.advisor.agent.tool.PortfolioSearchTool} call {@code client.models.embedContent(...)}
- * directly.
+ * {@code LlmAgent}s (that one is private to ADK's {@code Gemini} class). Used for calls that sit
+ * outside ADK's agent abstraction: {@link com.wealth.advisor.portfolio.HoldingsExtractionService}'s
+ * structured-output extraction and the compaction summarizer.
  *
  * <p>Builder with no explicit key/project/credentials resolves auth from the same env vars as
  * the agent's model does: {@code GOOGLE_GENAI_USE_VERTEXAI}, {@code GOOGLE_CLOUD_PROJECT}, {@code
