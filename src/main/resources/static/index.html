@@ -21,30 +21,23 @@
 
 	<div class="card mb-3">
 		<div class="card-body">
-			<h6 class="card-subtitle mb-2 text-muted">Upload portfolio documents</h6>
+			<h6 class="card-subtitle mb-2 text-muted">Upload portfolio statements</h6>
 			<form id="upload-form" class="row g-2 align-items-center">
 				<div class="col-12 col-sm">
 					<input id="portfolio-file" type="file" class="form-control form-control-sm" accept="application/pdf" multiple required>
 				</div>
 				<div class="col-auto">
-					<select id="document-type" class="form-select form-select-sm">
-						<option value="brokerage">Brokerage statement</option>
-						<option value="resume">Resume</option>
-						<option value="bank_statement">Bank statement</option>
-						<option value="other">Other</option>
-					</select>
-				</div>
-				<div class="col-auto">
 					<button type="submit" class="btn btn-sm btn-primary">Upload</button>
 				</div>
 			</form>
+			<div class="form-text mt-1">PDF brokerage or portfolio statements only. Add one per account.</div>
 			<div id="upload-status" class="form-text mt-1"></div>
 		</div>
 	</div>
 
 	<div class="card mb-3">
 		<div class="card-body">
-			<h6 class="card-subtitle mb-2 text-muted">Your documents</h6>
+			<h6 class="card-subtitle mb-2 text-muted">Your statements</h6>
 		</div>
 		<ul id="documents-list" class="list-group list-group-flush"></ul>
 	</div>

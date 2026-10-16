@@ -3,7 +3,6 @@ const chatForm = document.getElementById('chat-form');
 const messageInput = document.getElementById('message');
 const uploadForm = document.getElementById('upload-form');
 const portfolioFile = document.getElementById('portfolio-file');
-const documentType = document.getElementById('document-type');
 const uploadStatus = document.getElementById('upload-status');
 const documentsList = document.getElementById('documents-list');
 const sessionSelect = document.getElementById('session-select');
@@ -26,7 +25,7 @@ async function refreshDocuments() {
 	const docs = await response.json();
 	documentsList.innerHTML = '';
 	if (docs.length === 0) {
-		documentsList.innerHTML = '<li class="list-group-item text-muted">No documents uploaded yet.</li>';
+		documentsList.innerHTML = '<li class="list-group-item text-muted">No statements uploaded yet.</li>';
 		return;
 	}
 	for (const doc of docs) {
@@ -34,7 +33,7 @@ async function refreshDocuments() {
 		li.className = 'list-group-item d-flex justify-content-between align-items-center';
 
 		const label = document.createElement('span');
-		label.textContent = `${doc.filename} (${doc.documentType}, ${doc.chunkCount} chunk(s)${doc.holdingsCount ? ', ' + doc.holdingsCount + ' holding(s)' : ''})`;
+		label.textContent = `${doc.filename} (${doc.holdingsCount ? doc.holdingsCount + ' holding(s), ' : ''}${doc.chunkCount} chunk(s))`;
 
 		const deleteButton = document.createElement('button');
 		deleteButton.type = 'button';
@@ -59,15 +58,19 @@ uploadForm.addEventListener('submit', async (event) => {
 		uploadStatus.textContent = `Uploading ${file.name}...`;
 		const body = new FormData();
 		body.append('file', file);
-		body.append('documentType', documentType.value);
 		const response = await fetch('/api/portfolio/upload', { method: 'POST', body });
 		if (response.status === 401) return handleSessionExpired();
 		if (!response.ok) {
-			uploadStatus.textContent = `Upload failed for ${file.name}: ` + response.status;
+			// 422 carries a user-readable reason ("doesn't look like a portfolio statement", ...).
+			let reason = '';
+			try { reason = (await response.json()).error || ''; } catch (e) { /* no JSON body */ }
+			uploadStatus.textContent = reason
+				? `${file.name} was not added. ${reason}`
+				: `Upload failed for ${file.name}: ${response.status}`;
 			return;
 		}
 	}
-	uploadStatus.textContent = `Uploaded ${files.length} document(s).`;
+	uploadStatus.textContent = `Added ${files.length} statement(s).`;
 	portfolioFile.value = '';
 	refreshDocuments();
 });
