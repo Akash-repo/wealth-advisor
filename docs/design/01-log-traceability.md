@@ -1,7 +1,7 @@
 # 01 — Log traceability
 
-Status: **implemented in part.** Context on every log line is done; the Cloud Logging JSON format
-is the next step. Written 2026-10-16 as the first piece of the observability topic.
+Status: **implemented.** Context on every log line, and a Cloud Logging JSON format for Cloud Run.
+Written 2026-10-16 as the first piece of the observability topic.
 
 ## 1. What we want to tackle
 
@@ -74,10 +74,35 @@ behavior, including that a propagated task does not leak its context onto a pool
   context.
 - Lines written on a thread we do not control and do not wrap are untagged.
 
-## 8. Next
+## 8. Cloud Logging JSON format
 
-1. **Cloud Logging JSON format.** Spring Boot ships ECS, GELF and Logstash JSON, but none sets
-   Cloud Logging's `severity` field (they use `level` / `log.level`), so error filters would not
-   work. A small custom `StructuredLogFormatter` for Google Cloud, enabled by a `cloud` profile.
-2. Add the `traceId` as `logging.googleapis.com/trace` so lines group under the request log.
-3. Example saved queries for the design note once the JSON format is live.
+`logging/GoogleCloudLogFormatter` (a Spring Boot `StructuredLogFormatter`) writes one JSON object per
+line: `severity`, `timestamp`, `message` (stack trace appended), `logger`, `thread`, the context keys
+that are set, and `logging.googleapis.com/trace` built from the project id and the Cloud Trace id.
+It is switched on by the `cloud` profile (`application-cloud.yml`), so local runs stay readable text.
+
+Why custom: Spring Boot ships ECS, GELF and Logstash JSON, but they call the level `log.level` or
+`level`. Cloud Logging only reads `severity`, so with a built-in format every line would show as the
+default severity and error filters would match nothing.
+
+**One deployment step is needed:** set `SPRING_PROFILES_ACTIVE=cloud` on the Cloud Run service (it is
+in the runbook's deploy command). It takes effect on the next deploy; the current revision keeps text
+logs.
+
+### Queries (Logs Explorer)
+
+```
+resource.type="cloud_run_revision" AND jsonPayload.userId="demo"
+jsonPayload.sessionId="<session id>"
+jsonPayload.requestId="<request id>"
+severity>=WARNING AND jsonPayload.userId="demo"
+jsonPayload.invocationId="<turn id>"
+```
+
+The last works on tool lines and joins to BigQuery: the invocation id is
+`agent_audit_log.user_prompt_id`, so one turn can be followed from the audit row to its log lines.
+
+## 9. Next (observability, part b)
+
+Analytics tables for tokens, cost and guardrail outcomes; the event-log redesign; replacing the
+in-memory accumulation with writes as events happen. To be discussed before building.

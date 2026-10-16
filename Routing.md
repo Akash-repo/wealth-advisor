@@ -526,8 +526,12 @@ flowchart TD
 
 Why the context is **not** set from plugin callbacks: callbacks and the step that follows can run on
 different pooled threads, so a value left behind would be stamped onto an unrelated task and attribute
-one user's activity to another. A missing tag is better than a wrong one. Details and the Cloud
-Logging JSON plan: `docs/design/01-log-traceability.md`.
+one user's activity to another. A missing tag is better than a wrong one.
+
+On Cloud Run (`SPRING_PROFILES_ACTIVE=cloud`) the same context becomes JSON fields — `severity`,
+`userId`, `sessionId`, `requestId`, `logging.googleapis.com/trace` — written by `GoogleCloudLogFormatter`,
+so Logs Explorer can filter with `jsonPayload.userId="demo"`. Details, the rejected options and example
+queries: `docs/design/01-log-traceability.md`.
 
 ---
 

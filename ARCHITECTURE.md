@@ -904,9 +904,23 @@ exit** by `logging/LogContext`: the request interceptor sets request id, user an
 `ToolContext`. It is deliberately **not** set from ADK plugin callbacks: a value left behind on a
 pooled thread would attribute one user's activity to another.
 
+**On Cloud Run, logs are JSON.** With the `cloud` profile (`SPRING_PROFILES_ACTIVE=cloud`) each line is
+one JSON object from `logging/GoogleCloudLogFormatter` — `severity`, `timestamp`, `message`, `logger`,
+`thread`, plus `userId`, `sessionId`, `requestId` (and `invocationId`, `agent` inside tools) as fields,
+and `logging.googleapis.com/trace` so Cloud Logging groups the app's lines under the platform's request
+log. A custom formatter is needed because Spring Boot's built-in JSON formats name the level `level` /
+`log.level`, but Cloud Logging only reads `severity`. Useful Logs Explorer queries:
+
+```
+resource.type="cloud_run_revision" AND jsonPayload.userId="demo"
+jsonPayload.sessionId="<session id>"
+jsonPayload.requestId="<request id>"
+severity>=WARNING AND jsonPayload.userId="demo"
+jsonPayload.invocationId="<turn id>"        # tool lines; the same id is agent_audit_log.user_prompt_id
+```
+
 ADK-internal and Firestore library lines cannot carry the context. The rationale, the rejected
-options and the next step (a Cloud Logging JSON format, since Spring Boot's built-in JSON formats do
-not set Cloud Logging's `severity`) are in `docs/design/01-log-traceability.md`.
+options and the queries are in `docs/design/01-log-traceability.md`.
 
 ## Environment variables
 
@@ -1073,7 +1087,7 @@ gcloud run deploy wealth-advisor \
   --region=us-central1 \
   --service-account=wealth-advisor-run@<PROJECT_ID>.iam.gserviceaccount.com \
   --allow-unauthenticated \
-  --set-env-vars=GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=<PROJECT_ID>,GOOGLE_CLOUD_LOCATION=us-central1,GCP_PROJECT_ID=<PROJECT_ID> \
+  --set-env-vars=GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=<PROJECT_ID>,GOOGLE_CLOUD_LOCATION=us-central1,GCP_PROJECT_ID=<PROJECT_ID>,SPRING_PROFILES_ACTIVE=cloud \
   --set-secrets=FMP_API_KEY=fmp-api-key:latest \
   --memory=1Gi \
   --cpu=1
@@ -1085,6 +1099,11 @@ entirely — without this flag, Cloud Run rejects anonymous requests before they
 Security, so nobody could even load `/login.html`. This app's real authentication is
 `SecurityConfig`'s form login (see [End-to-end request flows](#end-to-end-request-flows)) — Cloud
 Run's own layer should stay open so that logic is the only gate a user actually hits.
+
+**`SPRING_PROFILES_ACTIVE=cloud`** turns on the Cloud Logging JSON log format (`application-cloud.yml`,
+see [Logging and traceability](#logging-and-traceability)). Without it the service still works, but
+logs are plain text, so they cannot be filtered by user or session and `severity` is not set. It
+applies from the next deploy; the already-deployed revision keeps the text format.
 
 `us-central1` matches `GOOGLE_CLOUD_LOCATION` deliberately — keeps Cloud Run and the Vertex AI
 calls it makes in the same region, not required but avoids unnecessary cross-region latency.
