@@ -53,8 +53,7 @@ public class DemoUserSeeder implements ApplicationRunner {
 							Map.of(
 									"email", demoUsername + "@example.com",
 									"passwordHash", passwordEncoder.encode(demoPassword),
-									"createdAt", Timestamp.now(),
-									"hasUploadedPortfolio", false))
+									"createdAt", Timestamp.now()))
 					.get();
 			log.info(
 					"Seeded demo user '{}' with the configured wealth.demo-user.password."

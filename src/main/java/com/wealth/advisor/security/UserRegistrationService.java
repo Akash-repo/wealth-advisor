@@ -20,7 +20,7 @@ import org.springframework.stereotype.Service;
  *
  * <pre>{@code
  * userRegistrationService.register("akash", "akash@example.com", "hunter22");
- * // -> writes users/akash = {email, passwordHash (bcrypt), createdAt, hasUploadedPortfolio: false}
+ * // -> writes users/akash = {email, passwordHash (bcrypt), createdAt}
  * }</pre>
  *
  * <p>The username becomes the Firestore document id directly (same convention as {@link
@@ -77,8 +77,7 @@ public class UserRegistrationService {
 							Map.of(
 									"email", email,
 									"passwordHash", passwordEncoder.encode(password),
-									"createdAt", Timestamp.now(),
-									"hasUploadedPortfolio", false))
+									"createdAt", Timestamp.now()))
 					.get();
 		} catch (InterruptedException | ExecutionException e) {
 			Thread.currentThread().interrupt();

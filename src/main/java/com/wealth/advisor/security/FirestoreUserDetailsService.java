@@ -33,8 +33,7 @@ import org.springframework.stereotype.Service;
  * {
  *   "email": "demo@example.com",
  *   "passwordHash": "$2a$10$...",   // bcrypt; added here, not in the original BRD schema
- *   "createdAt": <timestamp>,
- *   "hasUploadedPortfolio": false
+ *   "createdAt": <timestamp>
  * }
  * }</pre>
  */

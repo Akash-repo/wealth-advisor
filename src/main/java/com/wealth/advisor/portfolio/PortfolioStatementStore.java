@@ -21,9 +21,9 @@ import org.springframework.stereotype.Component;
  * All Firestore access for uploaded statements: one {@code portfolio_documents} record per
  * statement plus one {@code portfolio_holdings} record per position in it.
  *
- * <p>A statement is saved with batched writes and its metadata record goes in the <em>last</em>
- * batch, so a statement only shows up in the list once all of its holdings are stored. (For
- * statements within one batch, which is every realistic one, the save is fully atomic.)
+ * <p>A statement is saved with batched writes and its record goes in the <em>last</em> batch, so a
+ * statement only shows up in the list once all of its holdings are stored. (For statements within
+ * one batch, which is every realistic one, the save is fully atomic.)
  */
 @Component
 public class PortfolioStatementStore {
@@ -44,10 +44,7 @@ public class PortfolioStatementStore {
 				.forEach(part -> commit("save holdings", batch -> part.forEach(h -> addHolding(batch, userId, filename, h))));
 		commit(
 				"save statement record",
-				batch -> {
-					batch.create(newDocument(FirestoreCollections.PORTFOLIO_DOCUMENTS), statementRecord(userId, filename, holdings.size()));
-					batch.update(userRef(userId), "hasUploadedPortfolio", true);
-				});
+				batch -> batch.create(newDocument(FirestoreCollections.PORTFOLIO_DOCUMENTS), statementRecord(userId, filename, holdings.size())));
 	}
 
 	/** The user's statements, newest first. */
@@ -98,10 +95,6 @@ public class PortfolioStatementStore {
 
 	private DocumentReference newDocument(String collection) {
 		return firestore.collection(collection).document();
-	}
-
-	private DocumentReference userRef(String userId) {
-		return firestore.collection(FirestoreCollections.USERS).document(userId);
 	}
 
 	private void commit(String action, Consumer<WriteBatch> writes) {
