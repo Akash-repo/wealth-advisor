@@ -1,6 +1,7 @@
 package com.wealth.advisor.agent.tool;
 
 import com.wealth.advisor.constants.FirestoreFields;
+import com.wealth.advisor.logging.LogContext;
 import com.wealth.advisor.constants.FirestoreCollections;
 import com.google.adk.tools.Annotations.Schema;
 import com.google.adk.tools.ToolContext;
@@ -80,7 +81,12 @@ public class PortfolioAllocationTool {
 							optional = true)
 					Integer topN,
 			ToolContext toolContext) {
-		String userId = toolContext.userId();
+		try (LogContext.Scope ignored = LogContext.forTool(toolContext)) {
+			return allocation(toolContext.userId(), topN);
+		}
+	}
+
+	private Map<String, Object> allocation(String userId, Integer topN) {
 		log.debug("getPortfolioAllocation(userId='{}', topN={})", userId, topN);
 
 		List<QueryDocumentSnapshot> docs;
@@ -106,7 +112,8 @@ public class PortfolioAllocationTool {
 										t -> t,
 										t ->
 												CompletableFuture.supplyAsync(
-														() -> marketDataService.getStockData(t), priceLookupExecutor)));
+														LogContext.propagating(() -> marketDataService.getStockData(t)),
+														priceLookupExecutor)));
 		CompletableFuture.allOf(priceFutures.values().toArray(new CompletableFuture[0])).join();
 
 		Map<String, Double> valueByTicker = new LinkedHashMap<>();

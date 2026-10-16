@@ -1,6 +1,7 @@
 package com.wealth.advisor.agent.tool;
 
 import com.wealth.advisor.constants.FirestoreFields;
+import com.wealth.advisor.logging.LogContext;
 import com.wealth.advisor.constants.FirestoreCollections;
 import com.google.adk.tools.Annotations.Schema;
 import com.google.adk.tools.ToolContext;
@@ -59,7 +60,12 @@ public class PortfolioHoldingsTool {
 							optional = true)
 					String ticker,
 			ToolContext toolContext) {
-		String userId = toolContext.userId();
+		try (LogContext.Scope ignored = LogContext.forTool(toolContext)) {
+			return holdings(toolContext.userId(), ticker);
+		}
+	}
+
+	private Map<String, Object> holdings(String userId, String ticker) {
 		boolean singleTicker = ticker != null && !ticker.isBlank();
 		log.debug("getPortfolioHoldings(userId='{}', ticker='{}')", userId, singleTicker ? ticker : "<all>");
 

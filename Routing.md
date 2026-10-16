@@ -21,11 +21,12 @@ Diagrams are [Mermaid](https://mermaid.js.org/); they render on GitHub and in mo
 8. [Authentication flow](#8-authentication-flow)
 9. [How the app authenticates to Google Cloud](#9-how-the-app-authenticates-to-google-cloud)
 10. [Observability write path](#10-observability-write-path)
-11. [Startup flow](#11-startup-flow)
-12. [Where data lives](#12-where-data-lives)
-13. [What is retrieved, and what is deterministic vs probabilistic](#13-what-is-retrieved-and-what-is-deterministic-vs-probabilistic)
-14. [What the prompts control vs what code controls](#14-what-the-prompts-control-vs-what-code-controls)
-15. [Known weak spots in the routing](#15-known-weak-spots-in-the-routing)
+11. [Log traceability](#11-log-traceability)
+12. [Startup flow](#12-startup-flow)
+13. [Where data lives](#13-where-data-lives)
+14. [What is retrieved, and what is deterministic vs probabilistic](#14-what-is-retrieved-and-what-is-deterministic-vs-probabilistic)
+15. [What the prompts control vs what code controls](#15-what-the-prompts-control-vs-what-code-controls)
+16. [Known weak spots in the routing](#16-known-weak-spots-in-the-routing)
 
 ---
 
@@ -231,7 +232,7 @@ Facts behind the boxes (verified in ADK 1.7.0 sources):
 - `SequentialAgent` runs every sub-agent every turn; nothing can skip the second one.
 - Compaction runs as a request processor **before each model call** and is synchronous. It has not
   been seen to fire in real data, and its persistence across turns is unproven
-  (see [section 15](#15-known-weak-spots-in-the-routing)).
+  (see [section 16](#16-known-weak-spots-in-the-routing)).
 - The loop ends only when the model returns a response containing no function call. The only
   built-in bound is `RunConfig.maxLlmCalls` (default 500); we do not set it.
 
@@ -495,7 +496,42 @@ flowchart LR
 
 ---
 
-## 11. Startup flow
+## 11. Log traceability
+
+Every log line carries `[requestId userId sessionId]`, but a chat turn does not stay on one thread, so
+the context is opened where the work happens and restored on exit (`logging/LogContext`).
+
+```mermaid
+flowchart TD
+    REQ(["HTTP request"]) --> INT["RequestLogContextInterceptor<br/>sets requestId, userId, traceId"]
+    INT --> CTRL["ChatController"]
+    CTRL --> CHAT["AgentChatService<br/>adds sessionId for the turn"]
+    CHAT -->|"runner.runAsync"| ADK["ADK runs the agents<br/>on other threads"]
+
+    ADK --> TOOL["A tool method<br/>on a default-executor thread"]
+    TOOL --> FT["LogContext.forTool(toolContext)<br/>userId, sessionId, invocationId, agent<br/>restored when the tool returns"]
+    FT --> ALLOC["Allocation tool fans out<br/>price lookups to virtual threads"]
+    ALLOC --> PROP["LogContext.propagating(...)<br/>carries the context across the hop"]
+
+    ADK -. "ADK / Firestore library lines" .-> LIB["Untagged: threads we do not control<br/>(messages usually include the session id)"]
+```
+
+| Where the line is written | Thread | How it gets its context |
+|---|---|---|
+| Controller, `AgentChatService`, recorders' `finalizeTurn` | request thread (`nio-8081-exec-N`) | interceptor plus the chat service scope |
+| Tool method bodies | gRPC executor (`default-executor-N`) | `LogContext.forTool(toolContext)` |
+| Parallel price lookups | virtual threads (`virtual-N`) | `LogContext.propagating(...)` |
+| Authentication lookup | request thread, inside the security filter chain | none (runs before the interceptor) |
+| ADK and Firestore internals | gRPC executor | none |
+
+Why the context is **not** set from plugin callbacks: callbacks and the step that follows can run on
+different pooled threads, so a value left behind would be stamped onto an unrelated task and attribute
+one user's activity to another. A missing tag is better than a wrong one. Details and the Cloud
+Logging JSON plan: `docs/design/01-log-traceability.md`.
+
+---
+
+## 12. Startup flow
 
 ```mermaid
 flowchart TD
@@ -514,7 +550,7 @@ flowchart TD
 
 ---
 
-## 12. Where data lives
+## 13. Where data lives
 
 | Store | Collection / table | What | Written by | Read by |
 |---|---|---|---|---|
@@ -532,7 +568,7 @@ Names live in `constants/FirestoreCollections` and `constants/BigQueryNames`. Tu
 
 ---
 
-## 13. What is retrieved, and what is deterministic vs probabilistic
+## 14. What is retrieved, and what is deterministic vs probabilistic
 
 ### What goes into the model's context
 
@@ -589,7 +625,7 @@ risk tolerance, say) should not depend on the model choosing to call a tool.
 
 ---
 
-## 14. What the prompts control vs what code controls
+## 15. What the prompts control vs what code controls
 
 There is **no separate global "system prompt"** in this app. Each agent has one `instruction`, loaded
 from `resources/prompts/<name>.txt`, and ADK sends it as that model call's system instruction.
@@ -633,7 +669,7 @@ post-check), or to measure it with an eval, rather than to add more words to the
 
 ---
 
-## 15. Known weak spots in the routing
+## 16. Known weak spots in the routing
 
 Stated plainly so the diagrams are not read as a guarantee.
 
@@ -648,3 +684,5 @@ Stated plainly so the diagrams are not read as a guarantee.
 | 7 | **No prompt-injection or output guardrails on the request path** beyond log-forging sanitization. | Untrusted text (user input, tool output, uploaded PDFs) reaches the model unfiltered. | Planned (guardrails topic) |
 | 8 | **Stack traces appeared in the 500 JSON in the local run** (DevTools sets this for development). | Must not be present in a production build. | Confirm on the deployed image |
 | 9 | **Audit rows are lost on a crash, and rejected requests are not audited.** | Gaps in the analysis data. | Open (observability topic) |
+| 10 | **ADK-internal and Firestore log lines carry no user or session tag.** | They run on gRPC threads we do not control; our own lines are tagged. | Accepted limit (their messages usually include the session id) |
+| 11 | **Startup logs a generated Spring Security password** (`Using generated security password: ...` at WARN). | A credential in the logs, and a hint that a default in-memory user exists alongside the Firestore-backed login. | **To investigate** in the security and identity topic |

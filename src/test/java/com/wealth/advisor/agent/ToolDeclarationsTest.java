@@ -1,10 +1,13 @@
 package com.wealth.advisor.agent;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.LoadMemoryTool;
+import com.wealth.advisor.agent.tool.MarketDataService;
 import com.wealth.advisor.agent.tool.PortfolioHoldingsTool;
+import com.wealth.advisor.agent.tool.StockLookupTool;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -21,6 +24,13 @@ class ToolDeclarationsTest {
 		assertThat(decl.name()).hasValue("getPortfolioHoldings");
 		assertThat(decl.parameters().orElseThrow().properties().orElseThrow()).containsKey("ticker");
 		assertThat(decl.parameters().orElseThrow().required().orElse(java.util.List.of())).doesNotContain("ticker");
+	}
+
+	@Test
+	void stockTool_exposesOnlyTheTickerToTheModel_notTheInjectedToolContext() {
+		var decl = FunctionTool.create(new StockLookupTool(mock(MarketDataService.class)), "getStockData").declaration().orElseThrow();
+
+		assertThat(decl.parameters().orElseThrow().properties().orElseThrow()).containsOnlyKeys("ticker");
 	}
 
 	@Test

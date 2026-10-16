@@ -1,6 +1,8 @@
 package com.wealth.advisor.agent;
 
+import com.wealth.advisor.constants.LogKeys;
 import com.wealth.advisor.constants.SessionStateKeys;
+import com.wealth.advisor.logging.LogContext;
 import com.wealth.advisor.util.AdkContentText;
 import com.google.adk.events.Event;
 import com.google.adk.runner.Runner;
@@ -120,7 +122,8 @@ public class AgentChatService {
 		if (!inFlight.add(key)) {
 			throw new ChatSessionBusyException(sid);
 		}
-		try {
+		// Every line logged during this turn on a thread we wrap carries the user and the session.
+		try (LogContext.Scope ignored = LogContext.with(Map.of(LogKeys.USER_ID, userId, LogKeys.SESSION_ID, sid))) {
 			return new ChatResult(sid, runTurn(userId, sid, message));
 		} catch (RuntimeException e) {
 			// A brand-new conversation whose very first turn failed would otherwise linger in the

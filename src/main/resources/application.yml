@@ -36,6 +36,10 @@ fmp:
   api-key: ${FMP_API_KEY:}
 
 logging:
+  pattern:
+    # Appended to every line by Spring Boot's default console pattern: [requestId userId sessionId].
+    # Values come from LogContext/MDC; a field that is not set on that thread prints empty.
+    correlation: "[%X{requestId:-} %X{userId:-} %X{sessionId:-}] "
   level:
     # Surfaces the DEBUG-level log.debug(...) calls added across this app's own classes (tool
     # invocations, session lookups, statement uploads, etc.) — useful alongside stepping through

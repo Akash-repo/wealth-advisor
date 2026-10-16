@@ -28,6 +28,7 @@ file grows as new questions come up.
 - [Portfolio holdings](#portfolio-holdings)
 - [Real market data](#real-market-data)
 - [BigQuery audit log](#bigquery-audit-log)
+- [Logging and traceability](#logging-and-traceability)
 - [Evals](#evals)
 - [Environment variables](#environment-variables)
 - [GCP deployment (Cloud Run)](#gcp-deployment-cloud-run)
@@ -891,6 +892,21 @@ each. Recency is a stand-in ranking, since the backend gives no relevance score.
 **Not in the Java SDK (1.7.0):** Vertex AI Memory Bank (LLM-extracted, consolidated memories) and
 a `PreloadMemoryTool`. Only `VertexAiSessionService` exists. Extracting durable facts would be our
 own code.
+
+## Logging and traceability
+
+Every log line carries `[requestId userId sessionId]` (Spring Boot's `logging.pattern.correlation`,
+set in `application.yml`). The values come from SLF4J's MDC, which is per thread, and a chat turn hops
+threads (request thread, then ADK's gRPC executor threads, then virtual threads for the allocation
+tool's parallel price lookups). So the context is opened where the work happens and **restored on
+exit** by `logging/LogContext`: the request interceptor sets request id, user and Cloud Trace id,
+`AgentChatService` adds the session for the turn, and each tool opens its own scope from its
+`ToolContext`. It is deliberately **not** set from ADK plugin callbacks: a value left behind on a
+pooled thread would attribute one user's activity to another.
+
+ADK-internal and Firestore library lines cannot carry the context. The rationale, the rejected
+options and the next step (a Cloud Logging JSON format, since Spring Boot's built-in JSON formats do
+not set Cloud Logging's `severity`) are in `docs/design/01-log-traceability.md`.
 
 ## Environment variables
 

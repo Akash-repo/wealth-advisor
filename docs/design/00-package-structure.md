@@ -66,6 +66,7 @@ service/       ChatService, ChatSessionService, portfolio and market-data servic
 agent/         agent definitions, tool/, prompt/, memory/
 guardrails/    GuardrailService + checks
 observability/ recorders and event model (today's audit/)
+logging/       LogContext: user/session/request on every log line (see 01-log-traceability.md)
 dto/  exception/  util/  security/
 ```
 
@@ -106,6 +107,7 @@ Decisions confirmed 2026-10-11: prompts as resource files, repository layer late
 | Util extraction (`util/AdkContentText`, one shared `ObjectMapper`) | **Done** — `7c71cbe` |
 | Service split (`ChatService` / `ChatSessionService`), `dto/` + `exception/` packages, `@RestControllerAdvice` | Confirmed, **not started** (step 4) |
 | Repository layer | Later — when Topic 5 (analytics tables) needs it |
+| `logging/` package (`LogContext`) and `constants/LogKeys` | **Done** — added with the log-traceability work |
 | ArchUnit dependency rules | Proposed, not confirmed |
 
 ### Correction recorded during step 3
