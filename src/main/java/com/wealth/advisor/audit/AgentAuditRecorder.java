@@ -7,17 +7,18 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.agents.CallbackContext;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.plugins.Plugin;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.InsertAllRequest;
 import com.google.cloud.bigquery.InsertAllResponse;
 import com.google.cloud.bigquery.TableId;
+import io.reactivex.rxjava3.core.Maybe;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,17 +28,12 @@ import org.springframework.stereotype.Component;
  * Records every real call this app makes to Gemini into BigQuery's {@code agent_audit_log} table
  * — this is the "see exactly what happened internally" tool, one row per user chat turn.
  *
- * <p>Wired onto both agents in {@code AgentConfig} via ADK's model-call callbacks:
+ * <p>An ADK global {@link Plugin}, registered once on the {@code App} in {@code RunnerConfig}
+ * rather than wired onto each agent: ADK then calls it for <em>every</em> agent's model calls, so a
+ * new agent is audited automatically.
  *
- * <pre>{@code
- * LlmAgent.builder()
- *     .beforeModelCallbackSync(agentAuditRecorder::beforeModel)
- *     .afterModelCallbackSync(agentAuditRecorder::afterModel)
- *     .build();
- * }</pre>
- *
- * <p>{@code beforeModel} fires immediately before every actual Gemini call, {@code afterModel}
- * immediately after — for <em>any</em> agent using these callbacks, not just one. A single user
+ * <p>{@code beforeModelCallback} fires immediately before every actual Gemini call, {@code
+ * afterModelCallback} immediately after. A single user
  * turn is correlated across both agents (and across however many times each agent calls the
  * model) using ADK's own {@code invocationId} — generated once per incoming user message by
  * {@code Runner} and threaded through every sub-agent in a {@code SequentialAgent}, which is
@@ -50,7 +46,7 @@ import org.springframework.stereotype.Component;
  * {@code *_llm_calls} JSON array.
  */
 @Component
-public class AgentAuditRecorder {
+public class AgentAuditRecorder implements Plugin {
 
 	private static final Logger log = LoggerFactory.getLogger(AgentAuditRecorder.class);
 
@@ -113,8 +109,14 @@ public class AgentAuditRecorder {
 			Integer promptTokens,
 			Integer completionTokens) {}
 
-	/** Registered as an agent's {@code beforeModelCallbackSync}. Never overrides the request. */
-	public Optional<LlmResponse> beforeModel(CallbackContext ctx, LlmRequest.Builder requestBuilder) {
+	@Override
+	public String getName() {
+		return "agent_audit_recorder";
+	}
+
+	/** Never overrides the request (an empty result means "carry on"). */
+	@Override
+	public Maybe<LlmResponse> beforeModelCallback(CallbackContext ctx, LlmRequest.Builder requestBuilder) {
 		invocationIdByTurnKey.put(TurnKey.of(ctx.userId(), ctx.sessionId()), ctx.invocationId());
 		TurnAudit turn =
 				turnsByInvocationId.computeIfAbsent(
@@ -123,15 +125,16 @@ public class AgentAuditRecorder {
 								new TurnAudit(
 										ctx.userId(), ctx.sessionId(), AdkContentText.textOf(ctx.userContent().orElse(null))));
 		turn.pendingByAgent.put(ctx.agentName(), new PendingRoundTrip(requestBuilder.build().toJson()));
-		return Optional.empty();
+		return Maybe.empty();
 	}
 
-	/** Registered as an agent's {@code afterModelCallbackSync}. Never overrides the response. */
-	public Optional<LlmResponse> afterModel(CallbackContext ctx, LlmResponse response) {
+	/** Never overrides the response. */
+	@Override
+	public Maybe<LlmResponse> afterModelCallback(CallbackContext ctx, LlmResponse response) {
 		TurnAudit turn = turnsByInvocationId.get(ctx.invocationId());
 		if (turn == null) {
 			log.warn("afterModel fired with no matching turn for invocationId='{}'", ctx.invocationId());
-			return Optional.empty();
+			return Maybe.empty();
 		}
 		PendingRoundTrip pending = turn.pendingByAgent.remove(ctx.agentName());
 		long latencyMs =
@@ -153,7 +156,7 @@ public class AgentAuditRecorder {
 								latencyMs,
 								promptTokens,
 								completionTokens));
-		return Optional.empty();
+		return Maybe.empty();
 	}
 
 	/**

@@ -187,30 +187,29 @@ or the vector distances are meaningless.
 | ChatController -> AgentChatService -> Runner          |
 |   -> SequentialAgent (wealthAdvisorPipeline)          |
 |        portfolio_analysis -> stock_recommendation     |
-|        tools: getStockData, searchPortfolio,          |
-|               getPortfolioHoldings (RAG)               |
+|        tools: getStockData, getPortfolioHoldings,      |
+|               getPortfolioAllocation, loadMemory      |
 |                                                       |
-| PortfolioController -> PortfolioIngestionService      |
-|   (PDFBox parse -> TextChunker -> EmbeddingService    |
-|    -> HoldingsExtractionService)                      |
+| PortfolioController -> PortfolioService               |
+|   (PdfTextReader -> HoldingsExtractionService         |
+|    -> PortfolioStatementStore)                        |
 |                                                       |
-| AgentAuditRecorder + ToolUsageRecorder (before/after  |
-|   model + tool callbacks, wired in AgentConfig)       |
+| AgentAuditRecorder + ToolUsageRecorder (ADK global    |
+|   plugins, registered on the App in RunnerConfig)     |
 +-------------------------------------------------------+
                             |
           +-----------------+------------------+
           v                                     v                          v
    Firestore                           BigQuery: wealth_agent      Financial Modeling Prep
-   users, portfolio_vectors,           .agent_audit_log            (getStockData's real
-   portfolio_holdings,                 .tool_invocations            price/fundamentals —
-   portfolio_documents,                .tool_registry                the one non-ADC
-   market_data_cache, adk-session/*    (1 row/turn, 1 row/tool call) credential, FMP_API_KEY)
-   (auth, RAG chunks, exact
-    holdings, upload metadata,
-    24h stock cache, ADK sessions)
+   users, portfolio_holdings,          .agent_audit_log            (getStockData's real
+   portfolio_documents,                .tool_invocations            price/fundamentals —
+   market_data_cache, adk-session/*    .tool_registry                the one non-ADC
+   (auth, exact holdings, upload       (1 row/turn, 1 row/tool call) credential, FMP_API_KEY)
+    metadata, 24h stock cache,
+    ADK sessions)
                             |
                             v
-          Gemini 2.5 Flash + text-embedding-004
+                 Gemini 2.5 Flash
                    (Vertex AI, via ADC)
 ```
 
@@ -218,7 +217,8 @@ or the vector distances are meaningless.
 `portfolio_analysis` has tools — `stock_recommendation` has none, it just reads
 `{portfolio_analysis}`'s output. See [Agentic AI / ADK concepts](#agentic-ai--adk-concepts) above
 for what each box/arrow means. `AgentAuditRecorder`/`ToolUsageRecorder` sit outside the request
-path proper — they're model-call/tool-call callbacks fired by ADK itself, not something
+path proper — they're ADK global plugins (model-call and tool-call callbacks ADK fires for every
+agent, registered once on the `App` in `RunnerConfig`), not something
 `AgentChatService` calls directly except once, at the very end of a turn, to flush each
 recorder's accumulated rows. See [BigQuery audit log](#bigquery-audit-log). Financial Modeling
 Prep is the one external, non-GCP call this app makes — see [Real market
@@ -286,8 +286,8 @@ holdings](#portfolio-holdings) for the design.
 5. `AgentChatService` walks the turn's events backwards and returns the last non-empty text
    found — stage 2's reply, not stage 1's intermediate analysis.
 6. Independently of all that, every real call *either* agent makes to Gemini during the turn is
-   captured by `AgentAuditRecorder`'s `beforeModelCallbackSync`/`afterModelCallbackSync` (wired
-   onto both agents in `AgentConfig`) — request JSON, response JSON, latency, token counts. Once
+   captured by `AgentAuditRecorder`'s `beforeModelCallback`/`afterModelCallback` (an ADK global
+   plugin registered on the `App` in `RunnerConfig`, so it sees both agents) — request JSON, response JSON, latency, token counts. Once
    the turn ends (success or thrown exception — `AgentChatService.chat` finalizes from a `finally`
    block), those accumulated calls are written as one row to BigQuery. See [BigQuery audit
    log](#bigquery-audit-log).
@@ -618,12 +618,14 @@ comfortably covers this project's scale, and its native `JSON` column type means
 request/response payloads stay queryable (`JSON_VALUE`, `JSON_QUERY`, ...) instead of being an
 opaque blob.
 
-**How a turn is captured** (`AgentAuditRecorder`, wired onto both agents in `AgentConfig` via
-`.beforeModelCallbackSync(agentAuditRecorder::beforeModel)` /
-`.afterModelCallbackSync(agentAuditRecorder::afterModel)`):
+**How a turn is captured** (`AgentAuditRecorder` implements ADK's `Plugin` interface and is
+registered once on the `App` in `RunnerConfig` via `.plugins(agentAuditRecorder, toolUsageRecorder)` —
+no per-agent wiring, so a new agent is audited automatically). Gotcha: with a `Runner` built from an
+`App`, plugins must be registered on the **`App`** — `Runner.Builder.plugins(...)` throws once an app
+is set:
 
-- `beforeModel` fires immediately before every actual Gemini call, for *either* agent; `afterModel`
-  immediately after. A single user turn is correlated across both agents (and across however many
+- `beforeModelCallback` fires immediately before every actual Gemini call, for *any* agent;
+  `afterModelCallback` immediately after. A single user turn is correlated across both agents (and across however many
   times each agent calls the model) using ADK's own `invocationId` — generated once per incoming
   user message by `Runner` and threaded through every sub-agent in the `SequentialAgent`.
 - One agent can call Gemini more than once per turn: if `portfolio_analysis` decides to call
@@ -709,10 +711,11 @@ Deliberately does **not** store which agent(s) own a tool — that's usage data,
 joining `tool_invocations` grouped by `tool_name`/`agent_name`, and storing it redundantly here
 would just be a second copy that could drift from the truth.
 
-**How a call gets captured:** ADK exposes `beforeToolCallbackSync`/`afterToolCallbackSync`/
-`onToolErrorCallbackSync` on `LlmAgent.builder()` — the exact same shape as the model callbacks
-`AgentAuditRecorder` already uses, just one level down (around the actual tool invocation rather
-than the Gemini call that requested it). `ToolContext` (passed to all three) already carries a
+**How a call gets captured:** `ToolUsageRecorder` is also an ADK global `Plugin`, implementing
+`beforeToolCallback`/`afterToolCallback`/`onToolErrorCallback` — the same mechanism
+`AgentAuditRecorder` uses for model calls, one level down (around the actual tool invocation rather
+than the Gemini call that requested it). `RunnerConfigTest` pins that both plugins are registered:
+if they were not, the app would still chat normally but silently stop writing audit rows. `ToolContext` (passed to all three) already carries a
 `functionCallId()` that ADK assigns once per real tool call — `ToolUsageRecorder` reuses that
 directly as `invocation_id` rather than generating a second id that would just duplicate it.
 Rows are buffered per turn (keyed by ADK's `invocationId`, same pattern as `AgentAuditRecorder`)

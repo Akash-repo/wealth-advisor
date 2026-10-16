@@ -43,8 +43,8 @@ flowchart LR
         RUN --> A1["portfolio_analysis<br/>LlmAgent"]
         RUN --> A2["stock_recommendation<br/>LlmAgent"]
         A1 --> TOOLS["Tools<br/>agent/tool/*"]
-        A1 -. callbacks .-> REC["AgentAuditRecorder<br/>ToolUsageRecorder"]
-        A2 -. callbacks .-> REC
+        A1 -. "ADK plugin callbacks" .-> REC["AgentAuditRecorder<br/>ToolUsageRecorder"]
+        A2 -. "ADK plugin callbacks" .-> REC
         CHAT -->|"finalizeTurn"| REC
     end
 
@@ -204,14 +204,14 @@ flowchart TD
         CMP{"Compaction check<br/>prompt tokens above threshold?"} -- yes --> SUM["Summarizer model call<br/>LlmEventSummarizer"]
         CMP -- no --> BLD
         SUM --> BLD["Build request:<br/>instruction + history + tool declarations"]
-        BLD --> BM["beforeModel callback<br/>AgentAuditRecorder"]
+        BLD --> BM["beforeModelCallback<br/>AgentAuditRecorder plugin"]
         BM --> GEN["Gemini generateContent"]
-        GEN --> AM["afterModel callback<br/>latency + tokens recorded"]
+        GEN --> AM["afterModelCallback<br/>latency + tokens recorded"]
         AM --> FC{"Function call<br/>in the response?"}
-        FC -- yes --> BT["beforeTool callback<br/>ToolUsageRecorder"]
+        FC -- yes --> BT["beforeToolCallback<br/>ToolUsageRecorder plugin"]
         BT --> EXEC["Execute tool"]
-        EXEC -- ok --> AT["afterTool callback"]
-        EXEC -- throws --> OT["onToolError callback<br/>recorded, not suppressed"]
+        EXEC -- ok --> AT["afterToolCallback"]
+        EXEC -- throws --> OT["onToolErrorCallback<br/>recorded, not suppressed"]
         AT --> APP["Append function-response event"]
         APP --> CMP
     end
@@ -488,8 +488,10 @@ flowchart LR
   loses that turn's rows.
 - A normal failure still writes a row (`status = ERROR`) because finalization is in `finally`.
 - Requests rejected before the chat service (400, 401, 429) leave no audit row.
-- The compaction summarizer's model call does not pass through these callbacks, so it is not
-  recorded.
+- The recorders are ADK global plugins registered once on the `App` (`RunnerConfig.advisorApp`), so
+  they see every agent's calls with no per-agent wiring.
+- The compaction summarizer's model call does not pass through these plugin callbacks, so it is
+  not recorded.
 
 ---
 

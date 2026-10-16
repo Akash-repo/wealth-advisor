@@ -9,8 +9,6 @@ import com.wealth.advisor.agent.prompt.PromptLoader;
 import com.wealth.advisor.agent.tool.PortfolioAllocationTool;
 import com.wealth.advisor.agent.tool.PortfolioHoldingsTool;
 import com.wealth.advisor.agent.tool.StockLookupTool;
-import com.wealth.advisor.audit.AgentAuditRecorder;
-import com.wealth.advisor.audit.ToolUsageRecorder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -43,8 +41,6 @@ public class AgentConfig {
 			PortfolioHoldingsTool portfolioHoldingsTool,
 			PortfolioAllocationTool portfolioAllocationTool,
 			StockLookupTool stockLookupTool,
-			AgentAuditRecorder agentAuditRecorder,
-			ToolUsageRecorder toolUsageRecorder,
 			AdvisorProperties properties,
 			PromptLoader promptLoader) {
 		return LlmAgent.builder()
@@ -62,15 +58,6 @@ public class AgentConfig {
 						// sessions, backed by the FirestoreMemoryService wired into the Runner below.
 						new LoadMemoryTool())
 				.outputKey("portfolio_analysis")
-				// Every real call to Gemini this agent makes gets recorded to BigQuery — see
-				// AgentAuditRecorder's javadoc for how a whole turn gets correlated across agents.
-				.beforeModelCallbackSync(agentAuditRecorder::beforeModel)
-				.afterModelCallbackSync(agentAuditRecorder::afterModel)
-				// Same idea, one level down: every real tool call this agent makes gets recorded to
-				// BigQuery too — see ToolUsageRecorder's javadoc.
-				.beforeToolCallbackSync(toolUsageRecorder::beforeTool)
-				.afterToolCallbackSync(toolUsageRecorder::afterTool)
-				.onToolErrorCallbackSync(toolUsageRecorder::onToolError)
 				.build();
 	}
 
@@ -80,8 +67,6 @@ public class AgentConfig {
 	 */
 	@Bean
 	public LlmAgent stockRecommendationAgent(
-			AgentAuditRecorder agentAuditRecorder,
-			ToolUsageRecorder toolUsageRecorder,
 			AdvisorProperties properties,
 			PromptLoader promptLoader) {
 		return LlmAgent.builder()
@@ -89,13 +74,6 @@ public class AgentConfig {
 				.description("Turns a portfolio analysis into a balanced recommendation with risk warnings.")
 				.model(properties.model().chat())
 				.instruction(promptLoader.load("stock_recommendation").text())
-				.beforeModelCallbackSync(agentAuditRecorder::beforeModel)
-				.afterModelCallbackSync(agentAuditRecorder::afterModel)
-				// No tools on this agent today, but wired for when it (or a future agent) gets one —
-				// costs nothing and means nobody has to remember to add this later.
-				.beforeToolCallbackSync(toolUsageRecorder::beforeTool)
-				.afterToolCallbackSync(toolUsageRecorder::afterTool)
-				.onToolErrorCallbackSync(toolUsageRecorder::onToolError)
 				.build();
 	}
 

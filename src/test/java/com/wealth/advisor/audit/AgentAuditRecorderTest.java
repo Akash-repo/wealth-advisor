@@ -41,8 +41,8 @@ class AgentAuditRecorderTest {
 		when(bigQuery.insertAll(any(InsertAllRequest.class))).thenReturn(ok);
 		AgentAuditRecorder recorder = new AgentAuditRecorder(bigQuery, new com.fasterxml.jackson.databind.ObjectMapper());
 
-		recorder.beforeModel(ctx("alice", "session-A", "inv-A"), LlmRequest.builder());
-		recorder.beforeModel(ctx("alice", "session-B", "inv-B"), LlmRequest.builder());
+		recorder.beforeModelCallback(ctx("alice", "session-A", "inv-A"), LlmRequest.builder());
+		recorder.beforeModelCallback(ctx("alice", "session-B", "inv-B"), LlmRequest.builder());
 
 		recorder.finalizeTurn("alice", "session-A", "agent1", "agent2", "", "reply A", 1, "SUCCESS", null);
 		recorder.finalizeTurn("alice", "session-B", "agent1", "agent2", "", "reply B", 1, "SUCCESS", null);

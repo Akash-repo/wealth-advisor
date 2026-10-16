@@ -12,6 +12,8 @@ import com.google.cloud.firestore.Firestore;
 import com.google.genai.Client;
 import com.wealth.advisor.agent.AgentChatService;
 import com.wealth.advisor.agent.GuardedMemoryService;
+import com.wealth.advisor.audit.AgentAuditRecorder;
+import com.wealth.advisor.audit.ToolUsageRecorder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -49,30 +51,37 @@ import org.springframework.context.annotation.Configuration;
  *
  * <p>Compaction needs {@link App}: {@code EventsCompactionConfig} has no home on {@code
  * Runner.Builder}, and {@code Runner.Builder.build()} throws if both {@code .agent(...)} and
- * {@code .app(...)} are set.
+ * {@code .app(...)} are set. For the same reason the audit plugins are registered here on the
+ * {@code App}: {@code Runner.Builder.plugins(...)} throws once an app is set.
  */
 @Configuration
 public class RunnerConfig {
 
+	/**
+	 * The ADK application: the agent pipeline plus everything that applies across it — the global
+	 * audit {@linkplain com.google.adk.plugins.Plugin plugins} and compaction.
+	 */
 	@Bean
-	public Runner runner(
+	public App advisorApp(
 			SequentialAgent wealthAdvisorPipeline,
-			Firestore firestore,
 			Client genAiClient,
-			AdvisorProperties properties) {
-		App app =
-				App.builder()
-						.name(wealthAdvisorPipeline.name())
-						.rootAgent(wealthAdvisorPipeline)
-						.eventsCompactionConfig(
-								EventsCompactionConfig.builder()
-										.summarizer(new LlmEventSummarizer(new Gemini(properties.model().chat(), genAiClient)))
-										.tokenThreshold(properties.compaction().tokenThreshold())
-										.eventRetentionSize(properties.compaction().eventRetentionSize())
-										.build())
-						.build();
+			AdvisorProperties properties,
+			AgentAuditRecorder agentAuditRecorder,
+			ToolUsageRecorder toolUsageRecorder) {
+		return App.builder()
+				.name(wealthAdvisorPipeline.name())
+				.rootAgent(wealthAdvisorPipeline)
+				// Global plugins: ADK calls these for every agent's model and tool calls.
+				.plugins(agentAuditRecorder, toolUsageRecorder)
+				.eventsCompactionConfig(compaction(genAiClient, properties))
+				.build();
+	}
+
+	/** Where conversation state lives: short-term sessions and long-term memory, both in Firestore. */
+	@Bean
+	public Runner runner(App advisorApp, Firestore firestore, AdvisorProperties properties) {
 		return Runner.builder()
-				.app(app)
+				.app(advisorApp)
 				// Short-term memory: one session = one conversation's events + state.
 				.sessionService(new FirestoreSessionService(firestore))
 				// Long-term memory: keyword search over events across all of a user's sessions. Its
@@ -81,6 +90,14 @@ public class RunnerConfig {
 				// GuardedMemoryService because the raw one throws on backend errors (failing the whole
 				// turn) and returns unbounded results. See ARCHITECTURE.md.
 				.memoryService(new GuardedMemoryService(new FirestoreMemoryService(firestore), properties.memory()))
+				.build();
+	}
+
+	private static EventsCompactionConfig compaction(Client genAiClient, AdvisorProperties properties) {
+		return EventsCompactionConfig.builder()
+				.summarizer(new LlmEventSummarizer(new Gemini(properties.model().chat(), genAiClient)))
+				.tokenThreshold(properties.compaction().tokenThreshold())
+				.eventRetentionSize(properties.compaction().eventRetentionSize())
 				.build();
 	}
 }

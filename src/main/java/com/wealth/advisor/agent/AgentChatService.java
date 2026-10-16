@@ -55,9 +55,9 @@ import org.springframework.stereotype.Service;
  * get-or-create check itself before every turn instead of relying on that flag.
  *
  * <p>Every real Gemini call either agent makes is separately recorded to BigQuery by {@link
- * AgentAuditRecorder}, and every real tool call by {@link ToolUsageRecorder} (both wired onto both
- * agents in {@code AgentConfig}) — this class only needs to call their respective {@code
- * finalizeTurn} methods once the turn is over (success or failure) so that accumulated data gets
+ * AgentAuditRecorder}, and every real tool call by {@link ToolUsageRecorder} (both are ADK global
+ * plugins, registered once on the {@code App} in {@code RunnerConfig}) — this class only needs to
+ * call their respective {@code finalizeTurn} methods once the turn is over (success or failure) so that accumulated data gets
  * written; for {@code AgentAuditRecorder} that also attaches the per-agent hand-off ({@code
  * input_to_agent2}) and final reply to the same row.
  *
