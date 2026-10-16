@@ -10,6 +10,14 @@ everything else builds on it. See also [FAQ.md](FAQ.md) for practical questions 
 way (how to run it locally, worked examples of how the DB queries actually work, etc.) — that
 file grows as new questions come up.
 
+> **Update (2026-10-16): embeddings and vector search were removed.** Statements are tables of
+> positions, and the numbers come from structured holdings, so the chunk/embed/`searchPortfolio`
+> path (the least-used tool, and an extra failure point on every upload) is gone. Uploads are now
+> portfolio statements only, parsed straight into `portfolio_holdings`. Sections below describe the
+> **current** behavior except where marked *historical* (the RAG concept note, the
+> `portfolio_vectors` schema, the vector-index gotcha, and design-decision / milestone entries
+> from before the change). See [Routing.md](Routing.md) for the current request routing.
+
 ## Table of contents
 
 - [What this app does](#what-this-app-does)
@@ -154,14 +162,14 @@ This app's `wealthAdvisorPipeline` (in `AgentConfig`) is exactly this: `portfoli
 deliberately returns only the *last* text-bearing event to the user — agent 1's intermediate
 analysis is consumed by agent 2 via the placeholder, not shown directly.
 
-### RAG (Retrieval-Augmented Generation), in this app specifically
+### RAG (Retrieval-Augmented Generation) — *historical*
 
-"RAG" here means: chunk an uploaded PDF, embed each chunk into a vector, store the vectors, and
-at query time embed the *question* and ask Firestore for the nearest-matching chunks — those
-chunks get stuffed into the prompt as context so the model can answer using real data it was
-never trained on. See `PortfolioIngestionService` (writing) and `PortfolioSearchTool` (reading).
-Both sides **must** use the same embedding model (`text-embedding-004` here) — otherwise the
-vector distances are meaningless.
+This app used to chunk an uploaded PDF, embed each chunk, store the vectors, and at query time
+embed the *question* and fetch the nearest chunks into the prompt. That pipeline was removed
+(2026-10-16): the structured holdings tools answer every portfolio question exactly, and the
+retrieval path was the least-used tool. RAG may return for a shared knowledge corpus (for example
+investing principles); if so, both the writing and reading sides must use the same embedding model,
+or the vector distances are meaningless.
 
 ## Architecture diagram
 
@@ -234,44 +242,43 @@ per-message.)*
 4. On success, Spring Security issues an `HttpOnly`, `SameSite=Lax` `JSESSIONID` cookie and
    redirects to `index.html`.
 
-### 2. Document upload (RAG ingestion + holdings extraction)
+### 2. Document upload (statement to holdings)
 
-Upload is optional (chat works without it — `searchPortfolio`/`getPortfolioHoldings` just report
-`found: false`), and a user can upload any number of **portfolio statements** — typically one per
-brokerage account. Anything that is not a portfolio statement (a resume, a bank statement) is
-rejected at upload. See [Portfolio holdings](#portfolio-holdings) for the full design.
+Upload is optional (chat works without it — the holdings and allocation tools just report
+`found: false`). A user can upload any number of **portfolio statements**, typically one per
+brokerage account; anything else (a resume, a bank statement) is rejected. See [Portfolio
+holdings](#portfolio-holdings) for the design.
 
 1. Authenticated `POST /api/portfolio/upload` (multipart, `file` only) hits
    `PortfolioController`, once per file — the frontend loops over however many files were selected.
-2. `PortfolioIngestionService.ingest`:
-   - Extracts text from the PDF (PDFBox's `Loader.loadPDF` + `PDFTextStripper`). A file that can't
-     be read as a PDF, or has no text (a scanned image), is rejected with **HTTP 422**.
-   - Runs `HoldingsExtractionService` over the text **first** to pull out structured holdings
-     (ticker, shares, cost basis, account). **No holdings found means it is not a portfolio
-     statement: HTTP 422, and nothing has been embedded or stored.** This is how "statements only"
-     is enforced — by outcome, since a client-supplied type label proves nothing.
-   - Only then splits the text into ~250-word chunks (`TextChunker`), embeds each
-     (`EmbeddingService`, Gemini `text-embedding-004`) and writes them to `portfolio_vectors` —
-     **additive**: a new upload never deletes a prior one's chunks, so multiple brokerage
-     statements coexist and all contribute to RAG search. The holdings go to `portfolio_holdings`.
-   - Writes one `portfolio_documents` metadata record for this upload (so it can be listed/deleted
-     as a unit — see `DELETE /api/portfolio/documents/{filename}`).
-   - Sets `users/{userId}.hasUploadedPortfolio = true`.
+2. `PortfolioService.ingest` runs three small steps, each in its own class:
+   - `PdfTextReader` reads the PDF's text. A file that can't be read as a PDF, or has no text (a
+     scanned image), is rejected with **HTTP 422**.
+   - `HoldingsExtractionService` asks Gemini for the holdings (structured output: ticker, shares,
+     cost basis, account) as typed `Holding` records. A model failure is a server error; **no
+     holdings found means it is not a portfolio statement: HTTP 422, and nothing is stored.** This
+     is how "statements only" is enforced — by outcome, since a client-supplied type label proves
+     nothing.
+   - `PortfolioStatementStore` saves the holdings to `portfolio_holdings` and one
+     `portfolio_documents` record in a single atomic batch (the record goes last, so a statement
+     only appears once all its holdings are stored). Statements are listed and deleted as a unit —
+     see `GET`/`DELETE /api/portfolio/documents`.
 
-### 3. Chat (the two-agent RAG pipeline)
+### 3. Chat (the two-agent pipeline)
 
 1. Authenticated `POST /api/chat` hits `ChatController`, which calls
    `AgentChatService.chat(authenticatedUsername, message)` — note the userId comes from the
    *authenticated principal*, never from the request body.
-2. `AgentChatService` ensures a Firestore-backed ADK session exists for this user (session id =
-   user id — one continuous conversation per user, no need to juggle multiple session ids), then
-   calls `runner.runAsync(...)`.
+2. `AgentChatService` resolves the conversation: a new one (UUID session, titled from the first
+   message) or one of the user's existing sessions (anyone else's id is a 404), then calls
+   `runner.runAsync(...)`. See [Sessions and memory](#sessions-and-memory).
 3. **Stage 1 — `portfolio_analysis`**: the model reads the conversation, and can call:
-   - `searchPortfolio` — embeds the user's question, runs a Firestore vector `findNearest` query
-     scoped to `whereEqualTo("userId", toolContext.userId())`, returns the closest chunks.
+   - `getPortfolioHoldings` — exact share totals per ticker across all the user's statements.
+   - `getPortfolioAllocation` — each position's current value and % weight, ranked.
    - `getStockData` — real price + fundamentals (P/E, PEG, forward P/E, EPS growth, free cash
      flow per share) by ticker, from Financial Modeling Prep behind a 24h Firestore cache; see
      [Real market data](#real-market-data).
+   - `loadMemory` — keyword search over the user's earlier conversations (guarded, capped).
    It writes a short analysis into session state under `portfolio_analysis`.
 4. **Stage 2 — `stock_recommendation`**: its instruction has `{portfolio_analysis}` substituted
    in, so it "reads" stage 1's analysis as plain text, and writes the final, user-facing reply
@@ -295,21 +302,11 @@ rejected at upload. See [Portfolio holdings](#portfolio-holdings) for the full d
 | `email`               | string    | seeded as `{username}@example.com` by `DemoUserSeeder`      |
 | `passwordHash`        | string    | bcrypt — **not** in the original design doc's schema, added because real auth needs a password |
 | `createdAt`           | timestamp |                                                             |
-| `hasUploadedPortfolio`| boolean   | set `true` after a successful upload                        |
 
-### `portfolio_vectors` — RAG chunks (this app's own collection)
+### `portfolio_vectors` — *removed* (2026-10-16)
 
-| Field       | Type              | Notes                                              |
-|-------------|-------------------|-----------------------------------------------------|
-| *(doc id)*  | auto-generated    |                                                      |
-| `userId`    | string            | indexed — pre-filter before the vector search        |
-| `filename`  | string            | original uploaded filename                           |
-| `chunkText` | string            | the ~250-word chunk, returned as RAG context         |
-| `embedding` | vector (768 floats)| from `text-embedding-004`                            |
-| `createdAt` | timestamp         |                                                       |
-
-**Requires a composite index** (equality filter on `userId` + vector index on `embedding`) — see
-[Gotchas](#gotchas-discovered-the-hard-way).
+No longer written or read. Existing documents in this collection (and the Firestore vector index
+created for it) are orphaned and can be deleted; nothing in the app depends on them.
 
 ### `portfolio_holdings` — exact per-account holdings (this app's own collection)
 
@@ -335,13 +332,12 @@ docs here, summed in Java by `PortfolioHoldingsTool`, not derived from prose chu
 | *(doc id)*        | auto-generated |                                                              |
 | `userId`           | string    | indexed                                                          |
 | `filename`          | string    |                                                                   |
-| `documentType`       | string    | always `brokerage` for new uploads; older documents may still carry `resume` / `bank_statement` / `other` (no longer accepted) |
-| `chunkCount`          | number    |                                                                   |
-| `holdingsCount`         | number    |                                                                   |
+| `holdingsCount`         | number    | holdings extracted from this statement                           |
 | `uploadedAt`             | timestamp |                                                                   |
 
 Exists so a user's uploads can be listed and deleted as a unit (`GET`/`DELETE
-/api/portfolio/documents/...`) without deriving that list from scattered chunk/holding rows.
+/api/portfolio/documents/...`) without deriving that list from scattered holding rows. Documents written before 2026-10-16 may
+also carry `documentType` and `chunkCount`; they are ignored.
 
 ### `market_data_cache` — real stock data, cached across all users (this app's own collection)
 

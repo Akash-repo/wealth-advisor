@@ -38,7 +38,7 @@ flowchart LR
     subgraph APP["Spring Boot app (Cloud Run)"]
         SEC["Security filter chain<br/>config/SecurityConfig"] --> CTRL["Controllers<br/>web/*"]
         CTRL --> CHAT["AgentChatService<br/>agent/"]
-        CTRL --> ING["PortfolioIngestionService<br/>portfolio/"]
+        CTRL --> ING["PortfolioService<br/>portfolio/"]
         CHAT --> RUN["ADK Runner<br/>config/RunnerConfig"]
         RUN --> A1["portfolio_analysis<br/>LlmAgent"]
         RUN --> A2["stock_recommendation<br/>LlmAgent"]
@@ -55,8 +55,7 @@ flowchart LR
     A1 -->|"generateContent"| GEM(["Vertex AI<br/>Gemini"])
     A2 -->|"generateContent"| GEM
     RUN -->|"compaction summary"| GEM
-    ING -->|"embeddings + extraction"| GEM
-    TOOLS -->|"embed query"| GEM
+    ING -->|"holdings extraction"| GEM
     TOOLS -->|"4 parallel calls"| FMP(["Financial Modeling Prep<br/>market data API"])
     REC -->|"insertAll"| BQ[("BigQuery<br/>wealth_agent")]
 ```
@@ -78,7 +77,7 @@ model sees is rebuilt from the session's events on every model call.
 | `GET /api/sessions` | required | `ChatController.sessions` | ADK `listSessions` + per-session `getSession` for titles | 200 list | 401 |
 | `GET /api/sessions/{id}/messages` | required | `ChatController.messages` | ADK `getSession` | 200 list | 401, 404 |
 | `DELETE /api/sessions/{id}` | required | `ChatController.deleteSession` | ADK `deleteSession` | 204 | 401, 404 |
-| `POST /api/portfolio/upload` | required | `PortfolioController` → `PortfolioIngestionService.ingest` | section 7 | 200 `{filename, chunksStored}` | 401, **422** (not a portfolio statement), 500 |
+| `POST /api/portfolio/upload` | required | `PortfolioController` → `PortfolioService.ingest` | section 7 | 200 `{filename, chunksStored}` | 401, **422** (not a portfolio statement), 500 |
 | `GET /api/portfolio/documents` | required | `PortfolioController` | Firestore `portfolio_documents` | 200 list | 401, 500 |
 | `DELETE /api/portfolio/documents/{filename}` | required | `PortfolioController` | batch delete in 3 collections | 200 | 401, 500 |
 | anything else, unauthenticated | — | entry point | — | `/api/**` → **401**; pages → **302** to `/login.html` | — |
@@ -243,7 +242,6 @@ Facts behind the boxes (verified in ADK 1.7.0 sources):
 ```mermaid
 flowchart LR
     M["Model decides<br/>which tool to call"] --> T1["getStockData(ticker)"]
-    M --> T2["searchPortfolio(query)"]
     M --> T3["getPortfolioHoldings(ticker?)"]
     M --> T4["getPortfolioAllocation(topN?)"]
     M --> T5["loadMemory(query)"]
@@ -251,10 +249,6 @@ flowchart LR
     T1 --> MD["MarketDataService"]
     MD --> CACHE[("Firestore<br/>market_data_cache<br/>24h per ticker")]
     MD -- "cache miss" --> FMP(["FMP API<br/>quote, ratios,<br/>financial-growth,<br/>analyst-estimates<br/>in parallel"])
-
-    T2 --> EMB["EmbeddingService"]
-    EMB --> VERT(["Vertex AI<br/>text-embedding-004"])
-    T2 --> VEC[("Firestore<br/>portfolio_vectors<br/>nearest 3, filtered by userId")]
 
     T3 --> HOLD[("Firestore<br/>portfolio_holdings<br/>filtered by userId")]
 
@@ -269,7 +263,6 @@ flowchart LR
 | Tool | Reads | Writes | Degrades to | Throws on |
 |---|---|---|---|---|
 | `getStockData` | `market_data_cache`, FMP | `market_data_cache` | `found: false` (no key, non-200, parse error) | — |
-| `searchPortfolio` | `portfolio_vectors`, Vertex embeddings | — | `found: false` | Firestore failure |
 | `getPortfolioHoldings` | `portfolio_holdings` | — | `found: false` | Firestore failure |
 | `getPortfolioAllocation` | `portfolio_holdings`, `market_data_cache`, FMP | cache | per-ticker `pricingUnavailableFor` | Firestore failure |
 | `loadMemory` | `user-event` collection group | — | empty memories | — (guarded) |
@@ -282,7 +275,7 @@ model cannot ask for another user's data.
 ## 7. Document upload flow
 
 Only **portfolio statements** are accepted. The check is by outcome: holdings are extracted
-**before** anything is embedded or stored, and a file with none is rejected.
+**before** anything is stored, and a file with none is rejected.
 
 ```mermaid
 sequenceDiagram
@@ -290,49 +283,46 @@ sequenceDiagram
     actor B as Browser
     participant S as Security filter
     participant PC as PortfolioController
-    participant IS as PortfolioIngestionService
-    participant PDF as PDFBox
+    participant PS as PortfolioService
+    participant R as PdfTextReader
     participant H as HoldingsExtractionService
-    participant E as EmbeddingService
     participant G as Vertex AI
+    participant ST as PortfolioStatementStore
     participant F as Firestore
 
     B->>S: POST /api/portfolio/upload (multipart, file only)
     S->>PC: authenticated
-    PC->>IS: ingest(userId, filename, bytes)
-    IS->>PDF: extract text
+    PC->>PS: ingest(userId, filename, bytes)
+    PS->>R: read(bytes)
     alt not a readable PDF, or no text
-        PDF-->>IS: error or blank
-        IS-->>PC: InvalidPortfolioDocumentException
-        PC-->>B: 422 {error}  (nothing stored)
+        R-->>PS: InvalidPortfolioDocumentException
+        PS-->>PC: exception
+        PC-->>B: 422 problem detail (nothing stored)
     else text extracted
-        IS->>H: extract(text)
+        PS->>H: extract(text)
         H->>G: generateContent (structured JSON of holdings)
-        G-->>H: holdings JSON
-        alt no holdings found
-            IS-->>PC: InvalidPortfolioDocumentException
-            PC-->>B: 422 {error: not a portfolio statement}  (nothing stored)
-        else holdings found
-            IS->>IS: TextChunker (about 250 words per chunk)
-            loop each chunk
-                IS->>E: embed(chunk)
-                E->>G: embedContent
-                G-->>E: 768-d vector
-                IS->>F: add portfolio_vectors {userId, filename, chunkText, embedding}
+        alt model call fails or output unparseable
+            G-->>H: error
+            H-->>PS: IllegalStateException
+            PC-->>B: 500 (nothing stored)
+        else holdings returned
+            G-->>H: holdings JSON
+            alt no holdings found
+                PS-->>PC: InvalidPortfolioDocumentException
+                PC-->>B: 422 problem detail (nothing stored)
+            else holdings found
+                PS->>ST: save(userId, filename, holdings)
+                ST->>F: one atomic batch: portfolio_holdings docs + portfolio_documents record
+                PS-->>PC: holdings count
+                PC-->>B: 200 {filename, holdingsCount}
             end
-            loop each holding
-                IS->>F: add portfolio_holdings {userId, filename, ticker, shares, ...}
-            end
-            IS->>F: set portfolio_documents metadata (documentType brokerage)
-            IS->>F: users/{userId}.hasUploadedPortfolio = true
-            IS-->>PC: chunk count
-            PC-->>B: 200 {filename, chunksStored}
         end
     end
 ```
 
-Delete (`DELETE /api/portfolio/documents/{filename}`) runs three batched deletes filtered by
-`userId` and `filename`: `portfolio_vectors`, `portfolio_holdings`, `portfolio_documents`.
+The 422 body is Spring's standard `ProblemDetail`, built by `ApiExceptionHandler` (the controller just
+throws). Delete (`DELETE /api/portfolio/documents/{filename}`) removes the statement's holdings and its
+record in batched deletes, filtered by `userId` and `filename`.
 
 Failure behavior:
 
@@ -340,10 +330,10 @@ Failure behavior:
 |---|---|
 | Not a PDF, corrupt or password protected | 422 with a user-readable message; nothing stored |
 | PDF with no text (scanned image) | 422; nothing stored |
-| No holdings found (resume, bank statement, anything else) | 422; nothing stored, no embeddings requested |
-| Vertex or Firestore error after validation | 500; the writes are **not transactional**, so a failure part-way through the chunk and holding writes can leave earlier rows behind (not exercised in testing) |
-
-No explicit upload size limit is configured; Spring's multipart default applies.
+| No holdings found (resume, bank statement, anything else) | 422; nothing stored |
+| Gemini call fails or returns unparseable output | 500; nothing stored (never reported as "not a statement") |
+| Firestore failure while saving | 500; the holdings and record are written in one batch, so a statement is stored fully or not at all |
+| File larger than 10MB | rejected by Spring's multipart limit (`spring.servlet.multipart.max-file-size`) |
 
 ---
 
@@ -364,7 +354,7 @@ flowchart TD
         R2 -- no --> R5["409 with error message"]
         R2 -- yes --> R3{"users/{username}<br/>already exists?"}
         R3 -- yes --> R5
-        R3 -- no --> R4["Write users/{username}<br/>BCrypt hash, hasUploadedPortfolio=false"]
+        R3 -- no --> R4["Write users/{username}<br/>email, BCrypt hash, createdAt"]
         R4 --> R6["200 {username}<br/>then client goes to login"]
     end
 
@@ -452,7 +442,7 @@ flowchart TD
 | Role | Used for |
 |---|---|
 | `roles/datastore.user` | All Firestore reads and writes: sessions and events, users, `portfolio_*`, `market_data_cache` |
-| `roles/aiplatform.user` | Gemini calls (both agents, the compaction summarizer, holdings extraction) and embeddings |
+| `roles/aiplatform.user` | Gemini calls (both agents, the compaction summarizer, holdings extraction) |
 | `roles/bigquery.dataEditor` (project level) | Inserting audit and tool rows; creating the dataset and tables at startup |
 | `roles/bigquery.jobUser` | Running query jobs |
 | `roles/secretmanager.secretAccessor` | Reading `FMP_API_KEY` if it is stored in Secret Manager |
@@ -526,10 +516,9 @@ flowchart TD
 
 | Store | Collection / table | What | Written by | Read by |
 |---|---|---|---|---|
-| Firestore | `users/{username}` | account, BCrypt hash, upload flag | registration, ingestion | login |
+| Firestore | `users/{username}` | account, BCrypt hash | registration, ingestion | login |
 | Firestore | ADK session collections | session doc (state, title) + `user-event` subcollection (the conversation) | ADK session service | Runner every model call, history API, memory search |
 | Firestore | `portfolio_documents` | one metadata doc per upload | ingestion | document list |
-| Firestore | `portfolio_vectors` | chunk text + 768-d embedding | ingestion | `searchPortfolio` |
 | Firestore | `portfolio_holdings` | one doc per holding per upload | ingestion | holdings and allocation tools |
 | Firestore | `market_data_cache` | FMP result per ticker, 24h | `MarketDataService` | `MarketDataService` |
 | BigQuery | `wealth_agent.agent_audit_log` | one row per turn | `AgentAuditRecorder` | analysis |
@@ -559,7 +548,6 @@ flowchart LR
 
     subgraph PROB["Added only if the MODEL chooses to call a tool (probabilistic)"]
         direction TB
-        P1["searchPortfolio: top 3 matching chunks"]
         P2["getPortfolioHoldings: exact share totals"]
         P3["getPortfolioAllocation: value and weight"]
         P4["getStockData: price and fundamentals"]
@@ -584,9 +572,8 @@ Not retrieved automatically, ever: **other sessions** (only reachable through `l
 | **Whether** a tool is called | **Probabilistic** | the model decides, steered by the prompt |
 | **Which** tool, and its arguments (ticker, search query, topN) | **Probabilistic** | model output |
 | How many loop iterations | **Probabilistic** | depends on what the model asks for next |
-| The **query text** used for `searchPortfolio` and `loadMemory` | **Probabilistic** | written by the model, then embedded or keyword-matched |
+| The **query text** used for `loadMemory` | **Probabilistic** | written by the model, then keyword-matched |
 | What a tool **does** once called (Firestore queries, sums, weights, rankings, forward P/E, cache TTL) | **Deterministic** | plain Java; same data in gives the same answer |
-| Vector search ranking | **Deterministic for a given query vector** | but the vector comes from the model-written query |
 | Prices and fundamentals | **Deterministic code over external data** | values change as FMP data changes; cached up to 24h |
 | Holdings **extracted from an uploaded PDF** | **Probabilistic** | an LLM turns text into structured rows at upload time; later sums are exact *over those rows* |
 | Compaction summary text | **Probabilistic** | an LLM summarizes (and it is lossy) |
@@ -657,6 +644,5 @@ Stated plainly so the diagrams are not read as a guarantee.
 | 5 | **Agent 2 always runs**, even for a plain lookup. | Extra serial model call and tokens per turn. | Under discussion |
 | 6 | **The tool-call loop is effectively unbounded.** `LlmAgent.maxSteps` is not set (default unbounded) and `RunConfig.maxLlmCalls` is ADK's default of 500. | A model stuck re-calling tools runs up cost and latency before anything stops it. | Open; set `maxSteps` per agent |
 | 7 | **No prompt-injection or output guardrails on the request path** beyond log-forging sanitization. | Untrusted text (user input, tool output, uploaded PDFs) reaches the model unfiltered. | Planned (guardrails topic) |
-| 8 | **Uploads are not transactional.** | A mid-way failure can leave partial chunks. | Open |
-| 9 | **Stack traces appeared in the 500 JSON in the local run** (DevTools sets this for development). | Must not be present in a production build. | Confirm on the deployed image |
-| 10 | **Audit rows are lost on a crash, and rejected requests are not audited.** | Gaps in the analysis data. | Open (observability topic) |
+| 8 | **Stack traces appeared in the 500 JSON in the local run** (DevTools sets this for development). | Must not be present in a production build. | Confirm on the deployed image |
+| 9 | **Audit rows are lost on a crash, and rejected requests are not audited.** | Gaps in the analysis data. | Open (observability topic) |

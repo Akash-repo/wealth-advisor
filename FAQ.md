@@ -40,6 +40,10 @@ instead of real data, see [Real market data](ARCHITECTURE.md#real-market-data).)
 
 ## How does the DB search actually work — for user auth vs. for vector search? What's the filter?
 
+> **Historical (2026-10-16):** this entry describes the embedding and vector-search pipeline, which
+> has since been removed — statements are now parsed straight into structured holdings. It is kept
+> for the reasoning it records, not as a description of the current code.
+
 These are two very different patterns, and mixing them up is an easy way to misread the code.
 
 ### Auth: a direct **document lookup**, not a query
@@ -98,6 +102,10 @@ ranking); vector search = "give me the top-3 documents matching this *equality f
 *closest meaning*" (a filter and a similarity rank, computed together, in a single query).
 
 ## Does uploading a PDF store it in GCS? What's the bucket? Can I upload more than one?
+
+> **Historical (2026-10-16):** this entry describes the embedding and vector-search pipeline, which
+> has since been removed — statements are now parsed straight into structured holdings. It is kept
+> for the reasoning it records, not as a description of the current code.
 
 **No GCS at all.** There's no bucket, no GCS dependency anywhere in this project.
 `PortfolioController.upload` reads the multipart file's bytes into memory,
@@ -186,8 +194,8 @@ was a deliberate initial shortcut to avoid building registration). Go to
    otherwise.
 2. Checks `users/{username}` doesn't already exist in Firestore — `409` if it's taken.
 3. Writes `users/{username}` with a bcrypt `passwordHash` (same `PasswordEncoder` bean
-   `FirestoreUserDetailsService` checks against), `email`, `createdAt`, and
-   `hasUploadedPortfolio: false` — the exact same shape `DemoUserSeeder` writes for the demo user.
+   `FirestoreUserDetailsService` checks against), `email`, and
+   a `createdAt` timestamp — the exact same shape `DemoUserSeeder` writes for the demo user.
 
 Registering does **not** log you in — the signup page's JS redirects to `/login.html` on success,
 where you authenticate with the credentials you just picked, same as any other user. From that
