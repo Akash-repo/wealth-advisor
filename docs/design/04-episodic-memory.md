@@ -1,0 +1,113 @@
+# 04 — Episodic memory
+
+Status: **in discussion, not built.** Decisions below were agreed on 2026-10-17; open points are listed at the
+end. Companion to [03 — User preferences](03-user-preferences-memory.md), which covers the profile (semantic)
+memory. The two are separate layers.
+
+## 1. What we want to tackle
+
+Let a user say "let's talk more about the JPMorgan idea we discussed last week" and have the advisor find
+that earlier conversation and continue it. Episodic memory is the record of *what happened* in past
+conversations, as opposed to the profile, which holds *who the user is*.
+
+## 2. What we have today
+
+`loadMemory` (ADK `LoadMemoryTool`), registered only on the first agent, `portfolio_analysis`. The model
+decides whether to call it and writes the keyword query itself. It searches raw past events, unranked,
+including the current session and the agent's own replies, capped by `GuardedMemoryService` at 8 entries of
+500 characters. It currently returns nothing, because the Firestore collection-group index it needs was never
+created. See ARCHITECTURE.md "Sessions and memory".
+
+## 3. Decisions so far
+
+### 3.1 The unit of memory is an episode, not a message
+
+An **episode** is a chunk of conversation about one topic: a short summary plus metadata and a pointer back
+to the raw events. Raw messages stay in the session store and are not copied. Messages are too small and lose
+context; whole sessions are too coarse.
+
+The extractor must **split a stretch of conversation into separate episodes when the topic changes
+substantially** (one per distinct topic, with a cap per run), so a single vector is never a blur of three
+topics. A resumed session simply produces new episodes; existing ones are not rewritten.
+
+### 3.2 Its own collection: `episodes`
+
+Not a field on the session document. One session produces many episodes; ADK's `FirestoreSessionService` owns
+the session documents; a vector index is defined per collection with `userId` and time as pre-filters; and
+episodes have their own lifecycle (regenerate when the summary prompt improves, delete when a session is
+deleted, retention rules).
+
+### 3.3 Schema (one document per episode)
+
+| Field | Purpose |
+|---|---|
+| `episodeId`, `userId` | Identity. Every query filters on `userId`. |
+| `sessionId`, `fromEventIndex`, `toEventIndex` | Pointer to the raw events, so detail is fetched without duplicating them |
+| `startTs`, `endTs` | Time filtering ("last week") |
+| `title` | One line, shown in lists |
+| `summary` | About 100 to 150 words, written by the model |
+| `entities` | Tickers and sectors discussed (exact matching) |
+| `topics` | A few keywords |
+| `decisions` | What advice was given or decided; matters most in finance |
+| `embedding` | Vector of title plus summary |
+| `extractorVersion`, `createdAt` | Provenance |
+
+### 3.4 One embedding per episode, no chunking
+
+The embedded text (title plus summary, about 100 to 150 words) is far below any embedding model's input
+limit. Chunking is for long raw text. The "chunking" decision is made earlier, at episode boundaries (3.1). We
+do not embed raw messages. A message-level index could be added later as a separate decision; the episode's
+pointer to raw events already supports "find the episode, then drill down".
+
+### 3.5 Retrieval
+
+1. The model calls a tool such as `searchPastConversations(topic, window)`. `window` is an **enum**
+   (`this_week`, `last_week`, `last_month`, `last_3_months`, `any`); the model never does date arithmetic and
+   **code** converts the enum to real dates.
+2. Filter by `userId` and the date range. This is a filter, not a score.
+3. Take the nearest candidates by embedding similarity (the query is embedded with the same model used at
+   write time), then rerank in application code with a **hybrid score**:
+
+   ```
+   score = 0.6 × similarity + 0.3 × entity_match + 0.1 × recency
+   ```
+
+   Similarity is meaning (embeddings); entity match is exact (a ticker or word appears); recency is a
+   decaying boost. The weights are tunable. Reciprocal rank fusion is an alternative that needs no weights.
+4. Return the top few as title, date and summary.
+5. If the model needs detail, `getEpisodeDetails(episodeId)` loads the raw turns from the session store.
+
+Reads are allowed to be model-judged (a tool call) because a missed read is cheap and self-correcting, unlike
+a missed write (see doc 03).
+
+### 3.6 Written by the batch job
+
+The same lazy batch job as the profile (same watermark and lease per session) produces episodes. Whether it
+makes one call with two outputs (profile operations plus episodes) or two separate calls is open; leaning
+toward two separate calls at first, because each is easier to test on its own.
+
+## 4. Industry context (from general knowledge; verify before quoting)
+
+CoALA taxonomy (working, episodic, semantic, procedural memory). Generative Agents (2023): a memory stream
+retrieved by relevance plus recency plus importance. MemGPT/Letta: tiered core, recall and archival memory.
+LangMem uses "episodic" to mean stored experiences (situation, reasoning, outcome), a different sense. Mem0,
+Zep (temporal knowledge graph) and Vertex AI Memory Bank extract memories in the background, usually with
+embeddings. Common practices: retrieve episodes rather than raw messages, filter on metadata before similarity
+search, keep raw history as the source of truth, write by background extraction.
+
+## 5. Open points
+
+- Verify the Firestore Java client supports vector search with pre-filters (the earlier RAG used Firestore
+  vectors), choose the embedding model available through Vertex, and create the vector index (an
+  infrastructure change that needs the project owner's approval).
+- One call or two for the batch job.
+- Weights of the hybrid score, the number of candidates, and the recency decay.
+- Retention and deletion: deleting a session deletes its episodes; whether old episodes are merged or expire.
+- Whether the second agent should also get the retrieval tools (today only `portfolio_analysis` has
+  `loadMemory`).
+- What happens to `loadMemory` and `GuardedMemoryService` once this exists (replace, or keep as a fallback).
+- Eval cases: a paraphrase finding the right episode ("that bank idea" finds the JPMorgan episode), an exact
+  ticker, a time-window filter, a user who has no matching episode, a multi-topic session being split, and
+  another user's episodes never being returned.
+- Privacy and compliance: whether advice records need a retention period separate from user deletion (the
+  BigQuery audit log already keeps one record per turn).
