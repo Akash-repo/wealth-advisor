@@ -95,7 +95,7 @@ Cheapest and most deterministic first, so most bad traffic dies early and cheapl
 6. **Observability** — every trigger logged with layer + reason.
 
 **In this app** (`com.wealth.advisor.guardrails`): `HeuristicInputGuardrail` (L1) →
-`ScopeClassifierGuardrail` (L2) → the agents (L3) → output check *(not built, "L4")`. `GuardrailChain` runs
+`ScopeClassifierGuardrail` (L2) → the agents (L3) → output check *(not built, "L4")*. `GuardrailChain` runs
 the layers in `@Order` and stops at the first rejection.
 
 ### Q6. How do cheap classifiers validate relevance? What are the options?
