@@ -183,8 +183,9 @@ flowchart TD
 
 - How the extractor separates a passing remark ("I'm nervous about today's drop") from a durable preference.
 - The exact schema, categories and sector taxonomy.
-- Whether an in-turn write tool is also added, and how it would be evaluated.
-- What the injected block looks like, and its size cap.
+- ~~Whether an in-turn write tool is also added.~~ **Decided 2026-10-17: no. Batch only, to keep it simple.**
+- ~~The injected block's size cap.~~ **Decided 2026-10-17: the profile stays under about 500 words**, so it is
+  always injected whole. What the block looks like is still open.
 - Whether the extractor's pass should also write into the episodic layer, or leave `loadMemory` alone.
 - Eval cases for extraction (durable vs transient, the fintech reversal, ambiguous sectors, injected text).
 
