@@ -956,6 +956,16 @@ model) run in the normal suite. `ScopeClassifierEvalTest` (tag `eval`) calls the
 prompts from the baseline probe plus follow-ups, and skips itself without Gemini credentials.
 Run it with `GOOGLE_GENAI_USE_VERTEXAI=true GOOGLE_CLOUD_PROJECT=… GOOGLE_CLOUD_LOCATION=… ./mvnw -Dtest=ScopeClassifierEvalTest test`.
 
+`GuardrailEvalTest` (tag `eval`) is the end-to-end check, in `PortfolioEvalTest`'s style: real HTTP, the
+real Spring context, real Gemini. It proves a rejection returns the canned refusal *and never touches the
+session* — a rejected first message creates no session, a rejected follow-up is absent from the saved
+history, and the next legitimate message in that session is answered normally — and that in-scope
+questions are not refused. Run it against the **Firestore emulator** so it writes nothing to your real
+database: `gcloud components install cloud-firestore-emulator`, then
+`gcloud emulators firestore start --host-port=localhost:8086`, then run the Maven command above with
+`FIRESTORE_EMULATOR_HOST=localhost:8086` and `-Dtest=GuardrailEvalTest`. BigQuery has no emulator, so
+accepted turns still write audit rows to the real dataset. Each turn takes seconds; the whole class takes a few minutes.
+
 ## Logging and traceability
 
 Every log line carries `[requestId userId sessionId]` (Spring Boot's `logging.pattern.correlation`,
