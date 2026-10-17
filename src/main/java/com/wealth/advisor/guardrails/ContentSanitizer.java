@@ -15,6 +15,9 @@ import org.springframework.stereotype.Component;
  * does <em>not</em> protect against this by itself, since the substituted value's own control
  * characters still reach the log output verbatim. {@link #sanitizeForLog} strips them.
  *
+ * <p>User-prompt scope checks live next to this class as {@link InputGuardrail} layers, run by
+ * {@link GuardrailChain}.
+ *
  * <p>Deliberately narrow for now. Validating/sanitizing full LLM responses, tool responses, or
  * user prompts against prompt injection is a real, harder problem (see this app's chat history —
  * an MCP server, or even a legitimate API, returning content crafted to manipulate the agent) and

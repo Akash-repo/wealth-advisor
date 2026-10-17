@@ -218,6 +218,11 @@ list. None of these need revisiting as part of this deployment.
 
 ## Priority 3 — Security / guardrails gaps
 
+> **Update 2026-10-17:** off-topic/scope misuse is now covered by the layered input guardrails (L1
+> heuristics + L2 scope classifier, fail-closed) — see ARCHITECTURE.md "Input guardrails". P3-1 below
+> still stands for injection that stays on-topic, and P3-2 (output check, "L4") is not built. Note P3-1
+> mentions RAG chunks; RAG was removed on 2026-10-16, so only the extracted-holdings path remains.
+
 ### P3-1. No defense against prompt injection via uploaded document content
 
 **Where:** `guardrails/ContentSanitizer.java` — by its own javadoc, scoped to log-forging

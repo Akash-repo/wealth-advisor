@@ -28,6 +28,7 @@ file grows as new questions come up.
 - [Portfolio holdings](#portfolio-holdings)
 - [Real market data](#real-market-data)
 - [BigQuery audit log](#bigquery-audit-log)
+- [Input guardrails](#input-guardrails)
 - [Logging and traceability](#logging-and-traceability)
 - [Evals](#evals)
 - [Environment variables](#environment-variables)
@@ -270,9 +271,11 @@ holdings](#portfolio-holdings) for the design.
 1. Authenticated `POST /api/chat` hits `ChatController`, which calls
    `AgentChatService.chat(authenticatedUsername, message)` — note the userId comes from the
    *authenticated principal*, never from the request body.
-2. `AgentChatService` resolves the conversation: a new one (UUID session, titled from the first
-   message) or one of the user's existing sessions (anyone else's id is a 404), then calls
-   `runner.runAsync(...)`. See [Sessions and memory](#sessions-and-memory).
+2. `AgentChatService` first checks the conversation is the user's (anyone else's id is a 404), then
+   runs the [input guardrails](#input-guardrails) on the message. A rejected message returns the
+   canned refusal and stops there — nothing is saved. Otherwise it creates the session if new (UUID,
+   titled from the first message) and calls `runner.runAsync(...)`. See
+   [Sessions and memory](#sessions-and-memory).
 3. **Stage 1 — `portfolio_analysis`**: the model reads the conversation, and can call:
    - `getPortfolioHoldings` — exact share totals per ticker across all the user's statements.
    - `getPortfolioAllocation` — each position's current value and % weight, ranked.
@@ -917,6 +920,41 @@ each. Recency is a stand-in ranking, since the backend gives no relevance score.
 **Not in the Java SDK (1.7.0):** Vertex AI Memory Bank (LLM-extracted, consolidated memories) and
 a `PreloadMemoryTool`. Only `VertexAiSessionService` exists. Extracting durable facts would be our
 own code.
+
+## Input guardrails
+
+Added 2026-10-17 after a live probe showed the agent prompts alone don't hold the domain boundary:
+code requests, translations, a haiku, and a poem-plus-stock-advice request were all answered. All
+of it lives in `com.wealth.advisor.guardrails`.
+
+**Layers, cheapest first; the first rejection stops the chain (fail fast):**
+
+| Layer | Class | What it does |
+|---|---|---|
+| L1 | `HeuristicInputGuardrail` | Normalizes the text (NFKC, invisible characters removed, lower-cased, punctuation → spaces), then matches a small phrase list ("ignore previous instructions", "show your system prompt", "you are now DAN"). A filter for lazy, high-volume attempts — *not* the injection defense; paraphrases fall through to L2. |
+| L2 | `ScopeClassifierGuardrail` | A small model (`advisor.guardrails.classifier-model`) returns `IN_SCOPE` / `OFF_TOPIC` / `UNSAFE` for the latest message, given the last few accepted messages. Judges meaning, so it catches paraphrases. A plain `genai` call — no tools, no session — a gate in front of the agents, not a stage in the pipeline. Prompt: `prompts/scope_classifier.txt`. |
+| L3 | the agents' own prompts and tools | Unchanged; the last line of defense. |
+| L4 | *not built yet* | Output check on the final reply. |
+
+`GuardrailChain` runs the `InputGuardrail` beans in `@Order`. Any rejection returns the same canned
+`advisor.guardrails.refusal-message`, so the user can't tell which layer fired; the layer and reason
+go to the log (a WARN line). A BigQuery audit row for rejections is not built yet.
+
+**Why the gate is in `AgentChatService.chat`, not an ADK plugin.** Rejected messages must never be
+saved to the session — otherwise they'd sit in history and bias the classifier and the agents on later
+turns. In ADK 1.7.0 `onUserMessageCallback` can only *replace* the message (it can't halt the run), and
+`beforeRunCallback` can halt but fires after the user message is already appended to the session. So the
+check runs before the session is touched; a rejected first message doesn't even create a session (the
+reply carries `sessionId: null`, which the UI already handles).
+
+**Classifier failure fails closed** (`advisor.guardrails.fail-closed: true`): if the classifier call
+errors or returns unparseable output, the message is refused. Set it to `false` to fail open (let the
+message through, with a WARN). `advisor.guardrails.enabled: false` turns the whole chain off.
+
+**Tests.** `HeuristicInputGuardrailTest`, `GuardrailChainTest`, `ScopeClassifierGuardrailTest` (fake
+model) run in the normal suite. `ScopeClassifierEvalTest` (tag `eval`) calls the real classifier on 17
+prompts from the baseline probe plus follow-ups, and skips itself without Gemini credentials.
+Run it with `GOOGLE_GENAI_USE_VERTEXAI=true GOOGLE_CLOUD_PROJECT=… GOOGLE_CLOUD_LOCATION=… ./mvnw -Dtest=ScopeClassifierEvalTest test`.
 
 ## Logging and traceability
 

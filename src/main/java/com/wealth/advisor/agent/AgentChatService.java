@@ -2,6 +2,8 @@ package com.wealth.advisor.agent;
 
 import com.wealth.advisor.constants.LogKeys;
 import com.wealth.advisor.constants.SessionStateKeys;
+import com.wealth.advisor.guardrails.GuardrailChain;
+import com.wealth.advisor.guardrails.GuardrailVerdict;
 import com.wealth.advisor.logging.LogContext;
 import com.wealth.advisor.util.AdkContentText;
 import com.google.adk.events.Event;
@@ -71,12 +73,16 @@ import org.springframework.stereotype.Service;
 public class AgentChatService {
 
 	private static final Logger log = LoggerFactory.getLogger(AgentChatService.class);
+	// Each prior message shown to the guardrail classifier is cut to this length: enough to tell what
+	// a follow-up refers to, without paying to re-send whole long agent replies.
+	private static final int GUARDRAIL_CONTEXT_CHARS = 300;
 
 	private final Runner runner;
 	private final String agent1Name;
 	private final String agent2Name;
 	private final AgentAuditRecorder agentAuditRecorder;
 	private final ToolUsageRecorder toolUsageRecorder;
+	private final GuardrailChain guardrailChain;
 	private final int maxTitleLength;
 	private final int maxListed;
 	// (userId, sessionId) pairs with a turn running right now. ADK doesn't serialize turns within
@@ -90,6 +96,7 @@ public class AgentChatService {
 			String agent2Name,
 			AgentAuditRecorder agentAuditRecorder,
 			ToolUsageRecorder toolUsageRecorder,
+			GuardrailChain guardrailChain,
 			AdvisorProperties properties) {
 		this.maxTitleLength = properties.chat().maxTitleLength();
 		this.maxListed = properties.chat().maxListedSessions();
@@ -98,6 +105,7 @@ public class AgentChatService {
 		this.agent2Name = agent2Name;
 		this.agentAuditRecorder = agentAuditRecorder;
 		this.toolUsageRecorder = toolUsageRecorder;
+		this.guardrailChain = guardrailChain;
 		log.info(
 				"AgentChatService ready: appName='{}', pipeline={} -> {}",
 				runner.appName(),
@@ -116,7 +124,16 @@ public class AgentChatService {
 	 */
 	public ChatResult chat(String userId, String sessionId, String message) {
 		boolean isNew = sessionId == null || sessionId.isBlank();
-		String sid = isNew ? createSession(userId, titleFrom(message)) : requireOwnedSession(userId, sessionId).id();
+		Session existing = isNew ? null : requireOwnedSession(userId, sessionId);
+
+		// Fail fast, before anything is saved: a rejected message must never reach the session (it
+		// would colour later turns), and a rejected first message must not leave an empty session.
+		GuardrailVerdict verdict = guardrailChain.check(message, recentMessages(userId, existing));
+		if (!verdict.allowed()) {
+			return new ChatResult(isNew ? null : existing.id(), guardrailChain.refusalMessage());
+		}
+
+		String sid = isNew ? createSession(userId, titleFrom(message)) : existing.id();
 
 		String key = userId + "/" + sid;
 		if (!inFlight.add(key)) {
@@ -139,6 +156,21 @@ public class AgentChatService {
 		} finally {
 			inFlight.remove(key);
 		}
+	}
+
+	/** The last few accepted messages of {@code session}, as "role: text" context lines for the guardrails. */
+	private List<String> recentMessages(String userId, Session session) {
+		if (session == null) {
+			return List.of();
+		}
+		List<ChatMessage> all = messagesOf(userId, session);
+		return all.subList(Math.max(0, all.size() - guardrailChain.historyMessages()), all.size()).stream()
+				.map(m -> m.role() + ": " + abbreviate(m.text()))
+				.toList();
+	}
+
+	private static String abbreviate(String text) {
+		return text.length() <= GUARDRAIL_CONTEXT_CHARS ? text : text.substring(0, GUARDRAIL_CONTEXT_CHARS) + "…";
 	}
 
 	private String runTurn(String userId, String sessionId, String message) {
@@ -233,7 +265,10 @@ public class AgentChatService {
 	 * rule {@link #runTurn} applies when picking a reply.
 	 */
 	public List<ChatMessage> history(String userId, String sessionId) {
-		Session session = requireOwnedSession(userId, sessionId);
+		return messagesOf(userId, requireOwnedSession(userId, sessionId));
+	}
+
+	private List<ChatMessage> messagesOf(String userId, Session session) {
 		List<ChatMessage> messages = new ArrayList<>();
 		boolean lastWasAgentReply = false;
 		for (Event event : session.events()) {

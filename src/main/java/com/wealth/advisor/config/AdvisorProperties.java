@@ -26,7 +26,8 @@ public record AdvisorProperties(
 		@NotNull @Valid Model model,
 		@NotNull @Valid Chat chat,
 		@NotNull @Valid Compaction compaction,
-		@NotNull @Valid Memory memory) {
+		@NotNull @Valid Memory memory,
+		@NotNull @Valid Guardrails guardrails) {
 
 	/** Which Gemini model each job uses. */
 	public record Model(@NotBlank String chat, @NotBlank String extraction) {}
@@ -43,4 +44,16 @@ public record AdvisorProperties(
 
 	/** Caps on what long-term memory search may hand back to the model. */
 	public record Memory(@Positive int maxEntries, @Positive int maxTextChars) {}
+
+	/**
+	 * Input guardrails run before a turn reaches the agents: {@code classifierModel} judges scope,
+	 * {@code failClosed} decides what a failed classifier call means, {@code historyMessages} bounds
+	 * the context it sees, and {@code refusalMessage} is the canned reply for any rejection.
+	 */
+	public record Guardrails(
+			boolean enabled,
+			@NotBlank String classifierModel,
+			boolean failClosed,
+			@Positive int historyMessages,
+			@NotBlank String refusalMessage) {}
 }

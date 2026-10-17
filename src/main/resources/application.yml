@@ -63,3 +63,15 @@ advisor:
   memory:
     max-entries: 8
     max-text-chars: 500
+  guardrails:
+    # Master switch for the input guardrail chain (L1 heuristics, then L2 scope classifier).
+    enabled: true
+    # Small, cheap model for the L2 scope classifier — a gate in front of the agents, not a stage in them.
+    classifier-model: gemini-2.5-flash-lite
+    # If the classifier call itself fails: true = refuse the message (fail closed), false = let it
+    # through (fail open, logged).
+    fail-closed: true
+    # How many of the most recent accepted messages the classifier sees for context.
+    history-messages: 4
+    # Shown for any rejected message; the same text for every layer, so it reveals nothing about which one fired.
+    refusal-message: "I can only help with investing, your portfolio and personal finance. Ask me about your holdings, a stock, or how to think about saving and allocation."
