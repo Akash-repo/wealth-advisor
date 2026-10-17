@@ -1,6 +1,7 @@
 # 03 — User preferences (long-term memory)
 
-Status: **design closed on 2026-10-17, not built.** Waiting for the go-ahead to implement.
+Status: **profile (semantic) memory design closed on 2026-10-17, not built. Episodic memory is NOT yet
+discussed** (see open points). Waiting for the go-ahead to implement.
 
 ## 1. What we want to tackle
 
@@ -192,7 +193,9 @@ flowchart TD
 - ~~Whether an in-turn write tool is also added.~~ **Decided 2026-10-17: no. Batch only, to keep it simple.**
 - ~~The injected block's size cap.~~ **Decided 2026-10-17: the profile stays under about 500 words**, so it is
   always injected whole. What the block looks like is still open.
-- Whether the extractor's pass should also write into the episodic layer, or leave `loadMemory` alone.
+- **Episodic memory (undiscussed):** what to do with `loadMemory` / `FirestoreMemoryService`: leave as is,
+  create its missing index, remove it, or feed it from the extractor's pass. This is a separate question from
+  the profile.
 - Eval cases for extraction (durable vs transient, the fintech reversal, ambiguous sectors, injected text).
 
 ## 6a. Closed on 2026-10-17 (the user accepted the recommendations)
