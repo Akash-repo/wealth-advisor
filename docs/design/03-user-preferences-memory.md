@@ -181,8 +181,14 @@ flowchart TD
 
 ## 6. Open points
 
-- How the extractor separates a passing remark ("I'm nervous about today's drop") from a durable preference.
-- The exact schema, categories and sector taxonomy.
+- ~~How the extractor separates a passing remark from a durable preference.~~ **Decided 2026-10-17: only durable
+  things are saved.** The extractor's single test: *would this still be true and relevant to advice in three
+  months?* Moods ("I'm nervous about today's drop"), questions ("should I buy MSFT?") and holdings (already
+  covered by statements) are ignored.
+- ~~The schema and categories.~~ **Decided 2026-10-17:** five categories plus an `other` slot for anything
+  durable that fits none of them: excluded sectors (fixed list), excluded tickers (valid symbols), goals and
+  horizon, risk stance, style preferences, other. Not yet decided: the exact sector list (GICS is the default
+  candidate).
 - ~~Whether an in-turn write tool is also added.~~ **Decided 2026-10-17: no. Batch only, to keep it simple.**
 - ~~The injected block's size cap.~~ **Decided 2026-10-17: the profile stays under about 500 words**, so it is
   always injected whole. What the block looks like is still open.
