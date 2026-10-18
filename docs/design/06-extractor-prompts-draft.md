@@ -40,13 +40,16 @@ Compare with the CURRENT PROFILE first. If a fact is already there, propose noth
 
 Map what the user says onto the allowed values:
 - excludedSectors: one of the 11 sectors listed below.
+- excludedIndustryGroups: one of the 25 industry groups listed below (for example Banks, Insurance), when the
+  user means something narrower than a whole sector.
 - excludedTickers: a ticker symbol (for a company name, give its ticker).
 - goals, riskStance, style: one short sentence in the user's own terms.
 - other: a durable fact that fits none of these, with the user's exact words. Use this for things that do not
   fit a sector ("no fintech").
-If the statement is narrower or broader than the allowed value, still choose the closest value, but lower the
-confidence and say so in note.
-(PENDING: an excludedIndustryGroups category with the GICS industry groups under each sector.)
+Choose the narrowest allowed value that still covers exactly what the user said. If the closest allowed value
+is much broader than their words (for example "no tobacco" against the group Food, Beverage & Tobacco, which
+would also exclude beverage companies), do NOT use it: put the user's exact words in other. Ethical or theme
+exclusions such as tobacco, weapons, or fossil fuels are not sectors or industry groups: use other.
 
 Give each operation a confidence between 0 and 1.
 
@@ -56,6 +59,8 @@ Return only the JSON.
 
 SECTORS: Communication Services, Consumer Discretionary, Consumer Staples, Energy, Financials, Health Care,
 Industrials, Information Technology, Materials, Real Estate, Utilities
+
+INDUSTRY GROUPS (GICS, 25; verify against the current GICS before building): Energy; Materials; Capital Goods; Commercial & Professional Services; Transportation; Automobiles & Components; Consumer Durables & Apparel; Consumer Services; Consumer Discretionary Distribution & Retail; Consumer Staples Distribution & Retail; Food, Beverage & Tobacco; Household & Personal Products; Health Care Equipment & Services; Pharmaceuticals, Biotechnology & Life Sciences; Banks; Financial Services; Insurance; Software & Services; Technology Hardware & Equipment; Semiconductors & Semiconductor Equipment; Telecommunication Services; Media & Entertainment; Utilities; Equity Real Estate Investment Trusts (REITs); Real Estate Management & Development
 
 CURRENT PROFILE:
 {profile}
@@ -69,7 +74,7 @@ Output schema (the sector field is an enum in the response schema, so the model 
 ```
 operations: [ {
   op: add | update | remove,
-  category: excludedSectors | excludedTickers | goals | riskStance | style | other,
+  category: excludedSectors | excludedIndustryGroups | excludedTickers | goals | riskStance | style | other,
   value: string (enum value, ticker, or short text),
   replaces: string | null,
   evidenceQuote: string,
@@ -144,7 +149,9 @@ ranges; embeds title plus summary; writes with predictable IDs.
 
 ## 5. Open points for this draft
 
-- Whether to add the industry-group level (PENDING above).
+- ~~Whether to add the industry-group level.~~ **Decided 2026-10-18: yes.** Two levels (11 sectors, 25 industry
+  groups), tickers, and `other`. Hypotheticals are ignored (decided the same day). A third level (the 74 GICS
+  industries, which is where Tobacco lives) was not added; theme exclusions go to `other` (see D17).
 - Confidence thresholds and what is applied below them.
 - The exact episode cap and summary length.
 - Whether the two extractors share one call (open question, decision 18 in doc 05).

@@ -187,6 +187,7 @@ something is deferred**, in the same pass as the decision.
 | D13 | Held-out guardrail evals with fresh phrasings, other languages, and attacks split across turns (the 17-case eval was partly tuned) | Needs a fair test set | Before relying on the guardrails more widely | ARCHITECTURE.md "Input guardrails"; interview Q&A |
 | D15 | Inferring preferences from behaviour (repeated questions, repeated requests) and the contradiction counter and conflict confirm-back it would need | Riskier second feature; only explicit statements act for now | Users say the system should have noticed a pattern | doc 03, 4.4 |
 | D16 | Staleness handling: a `lastConfirmed` age shown in the injected profile, a 12-month flag for risk stance, style and other, and the agent asking the user to re-confirm | The owner wants it as an enhancement | Users complain about outdated entries influencing advice | doc 03 |
+| D17 | Theme/ESG exclusions (tobacco, weapons, fossil fuels) as a first-class category, and the third GICS level (74 industries); today they live in `other` as free text and cannot be enforced by code | The GICS two-level vocabulary does not model them; needs a curated list | Users commonly state theme exclusions, or code-side enforcement (D2) is built | doc 03, 6a; doc 06 |
 | D14 | Fate of `loadMemory` / `GuardedMemoryService` once episodes exist, and creating the Firestore composite index it needs | Depends on episodic design; index is an infrastructure change that needs approval | Stage 4 | doc 04, section 5 |
 
 ## 8. Housekeeping when it is built
