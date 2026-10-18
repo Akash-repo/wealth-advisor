@@ -96,7 +96,7 @@ class PreferenceServiceTest {
 	void aFullProfileRefusesANewEntryButStillAcceptsOneThatAlreadyExists() {
 		AdvisorProperties d = TestProperties.defaults();
 		PreferenceService tiny = serviceWith(new AdvisorProperties(
-				d.model(), d.chat(), d.compaction(), d.memory(), d.guardrails(),
+				d.model(), d.chat(), d.compaction(), d.guardrails(),
 				new AdvisorProperties.Profile("m", 500, 1, 0.6), d.extraction(), d.episodes()));
 		state.set(PreferenceProfile.empty().with(extracted(PreferenceCategory.EXCLUDED_SECTORS, "Energy")));
 

@@ -2,16 +2,15 @@ package com.wealth.advisor.config;
 
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.apps.App;
-import com.google.adk.memory.FirestoreMemoryService;
 import com.google.adk.models.Gemini;
 import com.google.adk.runner.Runner;
+import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.FirestoreSessionService;
 import com.google.adk.summarizer.EventsCompactionConfig;
 import com.google.adk.summarizer.LlmEventSummarizer;
 import com.google.cloud.firestore.Firestore;
 import com.google.genai.Client;
 import com.wealth.advisor.agent.AgentChatService;
-import com.wealth.advisor.agent.GuardedMemoryService;
 import com.wealth.advisor.audit.AgentAuditRecorder;
 import com.wealth.advisor.audit.ToolUsageRecorder;
 import org.springframework.context.annotation.Bean;
@@ -77,20 +76,24 @@ public class RunnerConfig {
 				.build();
 	}
 
-	/** Where conversation state lives: short-term sessions and long-term memory, both in Firestore. */
+	/**
+	 * Short-term memory: one session = one conversation's events + state, in Firestore. A bean of its own
+	 * (not built inside the runner) so that code which only reads sessions can depend on it without
+	 * depending on the runner, which depends on the agents.
+	 */
 	@Bean
-	public Runner runner(App advisorApp, Firestore firestore, AdvisorProperties properties) {
-		return Runner.builder()
-				.app(advisorApp)
-				// Short-term memory: one session = one conversation's events + state.
-				.sessionService(new FirestoreSessionService(firestore))
-				// Long-term memory: keyword search over events across all of a user's sessions. Its
-				// addSessionToMemory is a no-op — FirestoreSessionService already indexes keywords on
-				// every appended event, so there's no separate "ingest" step. Wrapped in
-				// GuardedMemoryService because the raw one throws on backend errors (failing the whole
-				// turn) and returns unbounded results. See ARCHITECTURE.md.
-				.memoryService(new GuardedMemoryService(new FirestoreMemoryService(firestore), properties.memory()))
-				.build();
+	public BaseSessionService sessionService(Firestore firestore) {
+		return new FirestoreSessionService(firestore);
+	}
+
+	/**
+	 * Runs the agents against the session store. ADK's own long-term {@code MemoryService} is not used:
+	 * long-term memory here is the preference profile and the episodes (see {@code
+	 * com.wealth.advisor.memory}), not ADK's keyword search over raw events.
+	 */
+	@Bean
+	public Runner runner(App advisorApp, BaseSessionService sessionService) {
+		return Runner.builder().app(advisorApp).sessionService(sessionService).build();
 	}
 
 	private static EventsCompactionConfig compaction(Client genAiClient, AdvisorProperties properties) {

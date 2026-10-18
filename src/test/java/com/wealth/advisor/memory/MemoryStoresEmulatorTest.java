@@ -98,6 +98,73 @@ class MemoryStoresEmulatorTest {
 		assertThat(freshStore().load(user).entries()).hasSize(12);
 	}
 
+	private static Episode episode(String user, String session, int position, String title, Instant end) {
+		return new Episode(
+				session + "__" + position, user, session, List.of(new MessageRange(1, 3), new MessageRange(7, 8)),
+				end.minusSeconds(600), end, title, "Summary of " + title, List.of("JPM"), List.of("Financials"), List.of("dividends"),
+				List.of("hold"), new double[] {0.25, -0.5, 1.0});
+	}
+
+	@Test
+	void anEpisodeIsReadBackWithItsRangesListsAndVector() {
+		EpisodeStore store = new EpisodeStore(firestore);
+		String user = newUser();
+		Episode original = episode(user, "s1", 0, "JPM idea", T);
+
+		store.replaceSession(user, "s1", List.of(original));
+
+		Episode read = store.get(user, "s1__0").orElseThrow();
+		assertThat(read).usingRecursiveComparison().ignoringFields("embedding").isEqualTo(original);
+		assertThat(read.embedding()).containsExactly(0.25, -0.5, 1.0);
+	}
+
+	@Test
+	void replacingASessionOverwritesItsEpisodesAndRemovesTheLeftovers() {
+		EpisodeStore store = new EpisodeStore(firestore);
+		String user = newUser();
+		store.replaceSession(user, "s1", List.of(episode(user, "s1", 0, "First", T), episode(user, "s1", 1, "Second", T), episode(user, "s1", 2, "Third", T)));
+		store.replaceSession(user, "other", List.of(episode(user, "other", 0, "Elsewhere", T)));
+
+		store.replaceSession(user, "s1", List.of(episode(user, "s1", 0, "First, rewritten", T)));
+
+		assertThat(store.candidates(user, T.minusSeconds(3600))).extracting(Episode::title).containsExactlyInAnyOrder("First, rewritten", "Elsewhere");
+	}
+
+	@Test
+	void candidatesAreFilteredByUserAndByWhenTheEpisodeEnded() {
+		EpisodeStore store = new EpisodeStore(firestore);
+		String user = newUser();
+		String other = newUser();
+		store.replaceSession(user, "s1", List.of(episode(user, "s1", 0, "Recent", T), episode(user, "s1", 1, "Old", T.minusSeconds(86_400L * 100))));
+		store.replaceSession(other, "s2", List.of(episode(other, "s2", 0, "Not yours", T)));
+
+		assertThat(store.candidates(user, T.minusSeconds(86_400L * 30))).extracting(Episode::title).containsExactly("Recent");
+		assertThat(store.candidates(user, T.minusSeconds(86_400L * 365))).extracting(Episode::title).containsExactlyInAnyOrder("Recent", "Old");
+	}
+
+	@Test
+	void anEpisodeCannotBeReadByAnotherUser() {
+		EpisodeStore store = new EpisodeStore(firestore);
+		String owner = newUser();
+		store.replaceSession(owner, "s1", List.of(episode(owner, "s1", 0, "Private", T)));
+
+		assertThat(store.get(newUser(), "s1__0")).isEmpty();
+		assertThat(store.get(owner, "s1__0")).isPresent();
+		assertThat(store.get(owner, "missing")).isEmpty();
+	}
+
+	@Test
+	void deletingASessionRemovesOnlyItsEpisodes() {
+		EpisodeStore store = new EpisodeStore(firestore);
+		String user = newUser();
+		store.replaceSession(user, "s1", List.of(episode(user, "s1", 0, "Gone", T)));
+		store.replaceSession(user, "s2", List.of(episode(user, "s2", 0, "Stays", T)));
+
+		store.deleteSession(user, "s1");
+
+		assertThat(store.candidates(user, T.minusSeconds(3600))).extracting(Episode::title).containsExactly("Stays");
+	}
+
 	@Test
 	void extractionStateIsRememberedPerUserAndSession() {
 		ExtractionStateStore state = new ExtractionStateStore(firestore);

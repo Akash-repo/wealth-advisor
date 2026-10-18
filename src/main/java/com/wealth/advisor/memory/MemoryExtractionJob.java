@@ -19,6 +19,9 @@ import org.springframework.stereotype.Component;
  * The background job that turns a user's finished conversations into long-term memory. Started when
  * the user opens the chat page ({@code POST /api/memory/refresh}) and run off the request thread.
  *
+ * <p>From each such session it derives two things: preference-profile changes (from the user's own
+ * messages) and topic episodes with embeddings (from the whole conversation).
+ *
  * <p>For each of the user's sessions that has <em>changed</em> since it was last processed and has
  * <em>settled</em> (no new message for a while, so a half-finished conversation is not read), the whole
  * session is read again and everything derived from it is recomputed. No bookmark inside a session and no
@@ -35,6 +38,10 @@ public class MemoryExtractionJob {
 	private final PreferenceExtractor preferenceExtractor;
 	private final PreferenceReconciler reconciler;
 	private final PreferenceStore preferences;
+	private final EpisodeExtractor episodeExtractor;
+	private final EpisodeValidator episodeValidator;
+	private final Embedder embedder;
+	private final EpisodeStore episodes;
 	private final ExtractionStateStore state;
 	private final Clock clock;
 	private final Duration settle;
@@ -46,6 +53,10 @@ public class MemoryExtractionJob {
 			PreferenceExtractor preferenceExtractor,
 			PreferenceReconciler reconciler,
 			PreferenceStore preferences,
+			EpisodeExtractor episodeExtractor,
+			EpisodeValidator episodeValidator,
+			Embedder embedder,
+			EpisodeStore episodes,
 			ExtractionStateStore state,
 			Clock clock,
 			AdvisorProperties properties) {
@@ -53,6 +64,10 @@ public class MemoryExtractionJob {
 		this.preferenceExtractor = preferenceExtractor;
 		this.reconciler = reconciler;
 		this.preferences = preferences;
+		this.episodeExtractor = episodeExtractor;
+		this.episodeValidator = episodeValidator;
+		this.embedder = embedder;
+		this.episodes = episodes;
 		this.state = state;
 		this.clock = clock;
 		this.settle = Duration.ofMinutes(properties.extraction().settleMinutes());
@@ -93,11 +108,21 @@ public class MemoryExtractionJob {
 	}
 
 	private void processSession(String userId, SessionSource.SessionStamp stamp) {
-		List<TimedMessage> userMessages = sessions.messages(userId, stamp.id()).stream().filter(TimedMessage::isUser).toList();
+		List<TimedMessage> messages = sessions.messages(userId, stamp.id());
+		List<TimedMessage> userMessages = messages.stream().filter(TimedMessage::isUser).toList();
 		if (!userMessages.isEmpty()) {
 			extractPreferences(userId, stamp.id(), userMessages);
+			extractEpisodes(userId, stamp.id(), messages);
 		}
 		state.markProcessed(userId, stamp.id(), stamp.lastUpdate());
+	}
+
+	/** Regenerates all of the session's episodes; the ids are predictable, so a rerun overwrites. */
+	private void extractEpisodes(String userId, String sessionId, List<TimedMessage> messages) {
+		List<Episode> built = episodeValidator.validate(episodeExtractor.extract(messages), messages, userId, sessionId);
+		List<Episode> embedded = built.stream().map(e -> e.withEmbedding(embedder.embedDocument(e.embeddingText()))).toList();
+		episodes.replaceSession(userId, sessionId, embedded);
+		log.info("Episodes: {} stored for the session", embedded.size());
 	}
 
 	private void extractPreferences(String userId, String sessionId, List<TimedMessage> userMessages) {

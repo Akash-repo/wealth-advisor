@@ -88,6 +88,19 @@ final class EvalHttp {
 		return messages.stream().map(m -> (String) m.get("text")).toList();
 	}
 
+	/** Starts the background memory job; answers 202 straight away. */
+	void refreshMemory(EvalUser user) {
+		exchange("/api/memory/refresh", HttpMethod.POST, new HttpEntity<>(user.headers()), new ParameterizedTypeReference<Void>() {});
+	}
+
+	List<Map<String, Object>> preferences(EvalUser user) {
+		return exchange("/api/preferences", HttpMethod.GET, new HttpEntity<>(user.headers()), new ParameterizedTypeReference<>() {});
+	}
+
+	void deletePreference(EvalUser user, String id) {
+		exchange("/api/preferences/" + id, HttpMethod.DELETE, new HttpEntity<>(user.headers()), new ParameterizedTypeReference<Void>() {});
+	}
+
 	<T> T exchange(String path, HttpMethod method, HttpEntity<?> entity, ParameterizedTypeReference<T> type) {
 		var response = restTemplate.exchange(path, method, entity, type);
 		assertThat(response.getStatusCode().is2xxSuccessful()).as(path + " -> " + response.getStatusCode()).isTrue();

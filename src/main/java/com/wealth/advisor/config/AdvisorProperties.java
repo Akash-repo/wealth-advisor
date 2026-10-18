@@ -28,7 +28,6 @@ public record AdvisorProperties(
 		@NotNull @Valid Model model,
 		@NotNull @Valid Chat chat,
 		@NotNull @Valid Compaction compaction,
-		@NotNull @Valid Memory memory,
 		@NotNull @Valid Guardrails guardrails,
 		@NotNull @Valid Profile profile,
 		@NotNull @Valid Extraction extraction,
@@ -36,7 +35,7 @@ public record AdvisorProperties(
 
 	/** A copy with different guardrail settings; the other groups are unchanged. */
 	public AdvisorProperties withGuardrails(Guardrails replacement) {
-		return new AdvisorProperties(model, chat, compaction, memory, replacement, profile, extraction, episodes);
+		return new AdvisorProperties(model, chat, compaction, replacement, profile, extraction, episodes);
 	}
 
 	/** Which Gemini model each job uses. */
@@ -51,9 +50,6 @@ public record AdvisorProperties(
 	 * than the most recent {@code eventRetentionSize} events is summarized.
 	 */
 	public record Compaction(@Positive int tokenThreshold, @Positive int eventRetentionSize) {}
-
-	/** Caps on what long-term memory search may hand back to the model. */
-	public record Memory(@Positive int maxEntries, @Positive int maxTextChars) {}
 
 	/**
 	 * Input guardrails run before a turn reaches the agents: {@code classifierModel} judges scope,
@@ -88,6 +84,9 @@ public record AdvisorProperties(
 	/**
 	 * Episodic memory: topic summaries of past conversations. {@code defaultWindowDays} is what an
 	 * unbounded search covers; the three weights make up the hybrid score and are applied as given.
+	 * Embedding models score even unrelated text well above zero, so a raw cosine similarity at or below
+	 * {@code similarityFloor} counts as 0 and one at or above {@code similarityCeiling} counts as 1;
+	 * both are specific to the embedding model and were calibrated with {@code EpisodeRetrievalEvalTest}.
 	 */
 	public record Episodes(
 			@NotBlank String extractorModel,
@@ -101,5 +100,7 @@ public record AdvisorProperties(
 			@Positive int detailsMaxChars,
 			@DecimalMin("0.0") double similarityWeight,
 			@DecimalMin("0.0") double entityWeight,
-			@DecimalMin("0.0") double recencyWeight) {}
+			@DecimalMin("0.0") double recencyWeight,
+			@DecimalMin("0.0") @DecimalMax("1.0") double similarityFloor,
+			@DecimalMin("0.0") @DecimalMax("1.0") double similarityCeiling) {}
 }

@@ -60,9 +60,6 @@ advisor:
   compaction:
     token-threshold: 50000
     event-retention-size: 20
-  memory:
-    max-entries: 8
-    max-text-chars: 500
   guardrails:
     # Master switch for the input guardrail chain (L1 heuristics, then L2 scope classifier).
     enabled: true
@@ -103,3 +100,7 @@ advisor:
     similarity-weight: 0.6
     entity-weight: 0.3
     recency-weight: 0.1
+    # gemini-embedding-001 scores unrelated text around 0.45 to 0.55 and good matches 0.65 to 0.75, so
+    # cosine similarity is rescaled between these before it is blended (see EpisodeRetrievalEvalTest).
+    similarity-floor: 0.5
+    similarity-ceiling: 0.75

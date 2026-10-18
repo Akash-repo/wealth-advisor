@@ -6,6 +6,7 @@ import com.wealth.advisor.guardrails.GuardrailChain;
 import com.wealth.advisor.guardrails.GuardrailVerdict;
 import com.wealth.advisor.logging.LogContext;
 import com.wealth.advisor.memory.ConversationReader;
+import com.wealth.advisor.memory.SessionMemoryCleanup;
 import com.wealth.advisor.util.AdkContentText;
 import com.google.adk.events.Event;
 import com.google.adk.runner.Runner;
@@ -85,6 +86,7 @@ public class AgentChatService {
 	private final ToolUsageRecorder toolUsageRecorder;
 	private final GuardrailChain guardrailChain;
 	private final ConversationReader conversationReader;
+	private final SessionMemoryCleanup memoryCleanup;
 	private final int maxTitleLength;
 	private final int maxListed;
 	// (userId, sessionId) pairs with a turn running right now. ADK doesn't serialize turns within
@@ -100,6 +102,7 @@ public class AgentChatService {
 			ToolUsageRecorder toolUsageRecorder,
 			GuardrailChain guardrailChain,
 			ConversationReader conversationReader,
+			SessionMemoryCleanup memoryCleanup,
 			AdvisorProperties properties) {
 		this.maxTitleLength = properties.chat().maxTitleLength();
 		this.maxListed = properties.chat().maxListedSessions();
@@ -110,6 +113,7 @@ public class AgentChatService {
 		this.toolUsageRecorder = toolUsageRecorder;
 		this.guardrailChain = guardrailChain;
 		this.conversationReader = conversationReader;
+		this.memoryCleanup = memoryCleanup;
 		log.info(
 				"AgentChatService ready: appName='{}', pipeline={} -> {}",
 				runner.appName(),
@@ -281,6 +285,7 @@ public class AgentChatService {
 	public void deleteSession(String userId, String sessionId) {
 		requireOwnedSession(userId, sessionId);
 		runner.sessionService().deleteSession(runner.appName(), userId, sessionId).blockingAwait();
+		memoryCleanup.forgetSession(userId, sessionId);
 	}
 
 

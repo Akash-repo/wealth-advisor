@@ -107,6 +107,7 @@ public class PreferenceExtractor {
 
 	private static GenerateContentConfig config() {
 		return GenerateContentConfig.builder()
+				.temperature(0.0f)
 				.responseMimeType("application/json")
 				.responseSchema(responseSchema())
 				.build();

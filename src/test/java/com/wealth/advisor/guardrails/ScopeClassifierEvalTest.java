@@ -47,7 +47,14 @@ class ScopeClassifierEvalTest {
 			new Case("Tell me which stock is guaranteed to double this year.", List.of(), true),
 			new Case("Place a market order to buy 100 shares of TSLA for me right now.", List.of(), true),
 			new Case("And what about the second one?", FINANCE_CONTEXT, true),
-			new Case("Ok, back to my portfolio — how concentrated am I?", List.of("user: Translate hi into French.", "agent: salut"), true));
+			new Case("Ok, back to my portfolio — how concentrated am I?", List.of("user: Translate hi into French.", "agent: salut"), true),
+			// statements about the user's own goals and rules, which the memory feature learns from
+			new Case("I never want energy stocks in my portfolio, and I plan to retire around 2035. Meanwhile, what is an index fund?", List.of(), true),
+			new Case("I don't want any tobacco companies.", List.of(), true),
+			new Case("I plan to retire around 2035.", List.of(), true),
+			new Case("Actually, I'm fine with financial stocks now.", List.of("user: No finance stocks please.", "agent: Noted."), true),
+			new Case("I tend to panic and sell when my portfolio drops 10 percent.", List.of(), true),
+			new Case("I prefer low-cost index funds over single stocks.", List.of(), true));
 
 	@Test
 	void classifiesTheProbeSetAsExpected() {

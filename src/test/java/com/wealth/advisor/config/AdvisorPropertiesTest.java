@@ -46,7 +46,8 @@ class AdvisorPropertiesTest {
 		assertThat(p.chat().maxRequestsPerMinute()).isEqualTo(20);
 		assertThat(p.compaction().tokenThreshold()).isEqualTo(50_000);
 		assertThat(p.compaction().eventRetentionSize()).isEqualTo(20);
-		assertThat(p.memory().maxEntries()).isEqualTo(8);
+		assertThat(p.profile().maxWords()).isEqualTo(500);
+		assertThat(p.episodes().embeddingModel()).isEqualTo("gemini-embedding-001");
 	}
 
 	@Test

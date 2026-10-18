@@ -4,10 +4,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
 import com.google.adk.tools.FunctionTool;
-import com.google.adk.tools.LoadMemoryTool;
+import com.wealth.advisor.agent.tool.EpisodeDetailsTool;
+import com.wealth.advisor.agent.tool.EpisodeSearchTool;
 import com.wealth.advisor.agent.tool.MarketDataService;
 import com.wealth.advisor.agent.tool.PortfolioHoldingsTool;
 import com.wealth.advisor.agent.tool.StockLookupTool;
+import com.wealth.advisor.config.TestProperties;
+import com.wealth.advisor.memory.EpisodeSearch;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -34,10 +37,19 @@ class ToolDeclarationsTest {
 	}
 
 	@Test
-	void loadMemoryTool_exposesAQueryParameter() {
-		var decl = new LoadMemoryTool().declaration().orElseThrow();
+	void searchPastConversations_onlyTheTopicIsRequired() {
+		var decl = FunctionTool.create(new EpisodeSearchTool(mock(EpisodeSearch.class)), "searchPastConversations").declaration().orElseThrow();
 
-		assertThat(decl.name()).hasValue("loadMemory");
-		assertThat(decl.parameters().orElseThrow().properties().orElseThrow()).containsKey("query");
+		assertThat(decl.name()).hasValue("searchPastConversations");
+		assertThat(decl.parameters().orElseThrow().properties().orElseThrow()).containsOnlyKeys("topic", "tickers", "window");
+		assertThat(decl.parameters().orElseThrow().required().orElse(java.util.List.of())).containsExactly("topic");
+	}
+
+	@Test
+	void getEpisodeDetails_takesJustTheEpisodeId() {
+		var decl = FunctionTool.create(new EpisodeDetailsTool(null, null, TestProperties.defaults()), "getEpisodeDetails").declaration().orElseThrow();
+
+		assertThat(decl.parameters().orElseThrow().properties().orElseThrow()).containsOnlyKeys("episodeId");
+		assertThat(decl.parameters().orElseThrow().required().orElse(java.util.List.of())).containsExactly("episodeId");
 	}
 }

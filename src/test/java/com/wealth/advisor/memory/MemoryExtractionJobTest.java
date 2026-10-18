@@ -32,6 +32,8 @@ class MemoryExtractionJobTest {
 	private SessionSource sessions;
 	private PreferenceExtractor extractor;
 	private PreferenceStore preferences;
+	private EpisodeExtractor episodeExtractor;
+	private EpisodeStore episodes;
 	private ExtractionStateStore state;
 	private MemoryExtractionJob job;
 	private PreferenceProfile saved;
@@ -43,6 +45,8 @@ class MemoryExtractionJobTest {
 		sessions = mock(SessionSource.class);
 		extractor = mock(PreferenceExtractor.class);
 		preferences = mock(PreferenceStore.class);
+		episodeExtractor = mock(EpisodeExtractor.class);
+		episodes = mock(EpisodeStore.class);
 		state = mock(ExtractionStateStore.class);
 		saved = null;
 		stamps.clear();
@@ -59,6 +63,10 @@ class MemoryExtractionJobTest {
 				extractor,
 				new PreferenceReconciler(TestProperties.defaults()),
 				preferences,
+				episodeExtractor,
+				new EpisodeValidator(TestProperties.defaults()),
+				new FakeEmbedder(),
+				episodes,
 				state,
 				Clock.fixed(NOW, ZoneOffset.UTC),
 				TestProperties.defaults());
@@ -83,6 +91,54 @@ class MemoryExtractionJobTest {
 
 		assertThat(saved.find(PreferenceCategory.EXCLUDED_SECTORS, "Energy")).isPresent();
 		verify(state).markProcessed("u", "a", LONG_AGO);
+	}
+
+	private static TimedMessage agentReply(int index, Instant at, String text) {
+		return new TimedMessage(index, TimedMessage.AGENT, at, text);
+	}
+
+	@Test
+	void theWholeConversationBecomesEpisodesWithEmbeddings() {
+		session("a", LONG_AGO, "What about the JPMorgan bank dividend?");
+		List<TimedMessage> both = List.of(
+				new TimedMessage(1, TimedMessage.USER, LONG_AGO.minusSeconds(120), "What about the JPMorgan bank dividend?"),
+				agentReply(2, LONG_AGO.minusSeconds(60), "It pays a dividend."));
+		when(sessions.messages("u", "a")).thenReturn(both);
+		when(extractor.extract(any(), any())).thenReturn(List.of());
+		when(episodeExtractor.extract(both)).thenReturn(List.of(new EpisodeDraft(
+				"JPMorgan dividend", "We discussed the JPMorgan bank dividend.", List.of(new EpisodeDraft.Range(1, 2)),
+				List.of("JPM"), List.of("Financials"), List.of(), List.of())));
+
+		job.refresh("u");
+
+		org.mockito.ArgumentCaptor<List<Episode>> stored = org.mockito.ArgumentCaptor.forClass(List.class);
+		verify(episodes).replaceSession(eq("u"), eq("a"), stored.capture());
+		assertThat(stored.getValue()).singleElement().satisfies(e -> {
+			assertThat(e.id()).isEqualTo("a__0");
+			assertThat(e.embedding()).isEqualTo(FakeEmbedder.vector("JPMorgan dividend\nWe discussed the JPMorgan bank dividend."));
+		});
+		verify(state).markProcessed("u", "a", LONG_AGO);
+	}
+
+	@Test
+	void aSessionWhoseEpisodeExtractionFailsIsNotMarked() {
+		session("a", LONG_AGO, "hello there");
+		when(extractor.extract(any(), any())).thenReturn(List.of());
+		when(episodeExtractor.extract(any())).thenThrow(new IllegalStateException("model down"));
+
+		job.refresh("u");
+
+		verify(episodes, never()).replaceSession(anyString(), anyString(), any());
+		verify(state, never()).markProcessed(anyString(), anyString(), any());
+	}
+
+	@Test
+	void aConversationWithNoUserMessagesProducesNoEpisodes() {
+		session("a", LONG_AGO);
+
+		job.refresh("u");
+
+		verify(episodeExtractor, never()).extract(any());
 	}
 
 	@Test

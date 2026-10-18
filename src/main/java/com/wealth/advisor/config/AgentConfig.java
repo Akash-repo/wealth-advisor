@@ -1,15 +1,16 @@
 package com.wealth.advisor.config;
 
 import com.google.adk.agents.LlmAgent;
-import com.wealth.advisor.memory.PreferenceInjector;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.tools.FunctionTool;
-import com.google.adk.tools.LoadMemoryTool;
 import com.wealth.advisor.agent.AgentChatService;
 import com.wealth.advisor.agent.prompt.PromptLoader;
+import com.wealth.advisor.agent.tool.EpisodeDetailsTool;
+import com.wealth.advisor.agent.tool.EpisodeSearchTool;
 import com.wealth.advisor.agent.tool.PortfolioAllocationTool;
 import com.wealth.advisor.agent.tool.PortfolioHoldingsTool;
 import com.wealth.advisor.agent.tool.StockLookupTool;
+import com.wealth.advisor.memory.PreferenceInjector;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -34,6 +35,13 @@ import org.springframework.context.annotation.Configuration;
 public class AgentConfig {
 
 	/**
+	 * The pipeline's name is also the ADK application name that sessions are keyed under. Code that has
+	 * to read sessions but must not depend on the {@code Runner} (which depends on the agents) uses this
+	 * constant, e.g. {@code AdkSessionSource}.
+	 */
+	public static final String PIPELINE_NAME = "wealth_advisor_pipeline";
+
+	/**
 	 * First stage: reads the conversation so far and the user's actual holdings and market data (via
 	 * its tools), and produces a short analysis for the next agent to act on.
 	 */
@@ -42,6 +50,8 @@ public class AgentConfig {
 			PortfolioHoldingsTool portfolioHoldingsTool,
 			PortfolioAllocationTool portfolioAllocationTool,
 			StockLookupTool stockLookupTool,
+			EpisodeSearchTool episodeSearchTool,
+			EpisodeDetailsTool episodeDetailsTool,
 			PreferenceInjector preferenceInjector,
 			AdvisorProperties properties,
 			PromptLoader promptLoader) {
@@ -56,9 +66,9 @@ public class AgentConfig {
 						FunctionTool.create(stockLookupTool, "getStockData"),
 						FunctionTool.create(portfolioHoldingsTool, "getPortfolioHoldings"),
 						FunctionTool.create(portfolioAllocationTool, "getPortfolioAllocation"),
-						// Long-term memory: keyword search over this user's events across ALL their
-						// sessions, backed by the FirestoreMemoryService wired into the Runner below.
-						new LoadMemoryTool())
+						// Episodic memory: summaries of this user's earlier conversations (see EpisodeSearch).
+						FunctionTool.create(episodeSearchTool, "searchPastConversations"),
+						FunctionTool.create(episodeDetailsTool, "getEpisodeDetails"))
 				.outputKey("portfolio_analysis")
 				.beforeModelCallbackSync(preferenceInjector)
 				.build();
@@ -87,7 +97,7 @@ public class AgentConfig {
 	public SequentialAgent wealthAdvisorPipeline(
 			LlmAgent portfolioAnalysisAgent, LlmAgent stockRecommendationAgent) {
 		return SequentialAgent.builder()
-				.name("wealth_advisor_pipeline")
+				.name(PIPELINE_NAME)
 				.description("Portfolio analysis followed by a balanced stock recommendation.")
 				.subAgents(portfolioAnalysisAgent, stockRecommendationAgent)
 				.build();

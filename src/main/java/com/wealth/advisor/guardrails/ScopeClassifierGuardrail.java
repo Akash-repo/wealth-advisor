@@ -107,6 +107,7 @@ public class ScopeClassifierGuardrail implements InputGuardrail {
 
 	private static GenerateContentConfig config() {
 		return GenerateContentConfig.builder()
+				.temperature(0.0f)
 				.responseMimeType("application/json")
 				.responseSchema(Schema.builder()
 						.type(Type.Known.OBJECT)
