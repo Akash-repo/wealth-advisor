@@ -85,21 +85,28 @@ a slightly stale profile; accepted.
 
 Do not rely on background work after a response: Cloud Run may throttle CPU once the response is sent.
 
-### 4.2 Which sessions, and "already processed"
+### 4.2 Which sessions, and "already processed" (revised 2026-10-17)
 
-For each of the user's sessions, keep a **watermark** (how far into that session's events extraction has
-read), not a yes/no flag. Sessions are resumable through the conversation picker, so a session marked done
-on Monday can gain messages on Wednesday. The job reads only the events past the watermark.
+Sessions are resumable through the conversation picker, so a session processed on Monday can gain messages on
+Wednesday. Within a session the whole history is already in the prompt, so memory only matters for *other*
+sessions. That lets us avoid incremental bookkeeping: for each session we store one number, the **message
+count when it was last processed** (in its own collection, for example
+`preference_extraction_state/{userId}_{sessionId}`, not on ADK's session documents). On each run:
 
-State lives in its own collection (for example `preference_extraction_state/{userId}_{sessionId}`), not as
-extra fields on ADK's own session documents, which `FirestoreSessionService` owns.
+- same count: skip;
+- larger count: process the **whole** session again (not just the new messages);
+- last message newer than about 30 minutes: skip for now (the **settle rule**), so a half-finished
+  conversation is not read; a later run picks it up.
 
-### 4.3 Concurrency: a lease per session
+An earlier version of this design used a per-session watermark (a position bookmark) with incremental
+reading; it was dropped in favour of this simpler rule.
 
-Two tabs or two Cloud Run instances can both start the job. Before processing a session, claim it in a Firestore
-transaction (`status = PROCESSING` plus an expiry time); on success write the new watermark and release.
-A crashed job's lease expires and a later run picks the session up. This is the same class of race as the
-`MERGE` bug found live in tool-usage tracking.
+### 4.3 Concurrency (revised 2026-10-17)
+
+Two tabs or two Cloud Run instances can start the job at the same time. No lease is used: the writes are
+idempotent. Profile entries are upserted by a key (category plus normalized value), so running twice yields
+the same profile, and episodes (doc 04) have predictable IDs that are overwritten. At worst two runs do the
+same work twice.
 
 ### 4.4 Extractor
 
@@ -160,14 +167,12 @@ system "knows". Staged so each step is testable:
 
 ```mermaid
 flowchart TD
-    PL[User opens the chat page] --> JOB["Background job (executor)<br/>find sessions past their watermark"]
-    JOB --> LEASE{"Claim session<br/>(Firestore transaction lease)"}
-    LEASE -- already claimed --> SKIP[skip]
-    LEASE -- claimed --> READ["Read the user's own messages<br/>after the watermark"]
+    PL[User opens the chat page] --> JOB["Background job (executor)<br/>find sessions whose message count changed<br/>and that have settled (30 min)"]
+    JOB --> READ["Read the user's own messages<br/>of the whole session"]
     READ --> EXT["Small model + schema<br/>ops: add / update / remove / ignore + confidence"]
     EXT --> VAL["Validate: taxonomy, caps, manual-wins rule"]
     VAL --> PROF[("user_preferences/{userId}<br/>typed entries + history")]
-    VAL --> WM["Advance watermark, release lease"]
+    VAL --> WM["Store the session's message count"]
 
     Q["New query, any later session"] --> GR[Input guardrails]
     GR --> LOAD[Load profile]
@@ -235,6 +240,15 @@ oldest-confirmed first, never the exclusions).
 7. Several preferences in one message, producing several operations.
 8. A message with no preference at all, producing an empty list.
 9. An idempotence check: running the same sessions twice produces no duplicate entries.
+
+## 6b. Deferred on 2026-10-17: remembering deletions
+
+A user-deleted preference could be re-added when an old session that still contains the original sentence is
+processed again. Decided to **accept this edge case for now**; the user can delete it again, and entries show
+where and when they were added so a re-added one is visible. To keep the later fix small, deleting in the UI
+should be a *soft delete* (`status = REMOVED_BY_USER` plus `removedAt`, entry kept) rather than physical
+removal. The later fix would drop an extractor `add` that matches a removed entry unless the evidence message
+is newer than `removedAt`; the enforcement is done in code, not by the model.
 
 ## 7. Not decided / explicitly out of scope for now
 

@@ -26,9 +26,12 @@ An **episode** is a chunk of conversation about one topic: a short summary plus 
 to the raw events. Raw messages stay in the session store and are not copied. Messages are too small and lose
 context; whole sessions are too coarse.
 
-The extractor must **split a stretch of conversation into separate episodes when the topic changes
-substantially** (one per distinct topic, with a cap per run), so a single vector is never a blur of three
-topics. A resumed session simply produces new episodes; existing ones are not rewritten.
+The extractor must **group the conversation by topic** (one episode per distinct topic, with a cap), so a
+single vector is never a blur of three topics. People return to topics (valuation, retirement, RSUs, then
+valuation again), so an episode is a **topic with a list of message ranges**, not one unbroken stretch: the
+two valuation stretches form one episode. Ranges of different episodes never overlap, and an episode never
+spans sessions (the session is the boundary the user chose, and deletion works per session). A topic that
+recurs across sessions is handled at search time, by returning one episode per session with dates.
 
 ### 3.2 Its own collection: `episodes`
 
@@ -42,7 +45,7 @@ deleted, retention rules).
 | Field | Purpose |
 |---|---|
 | `episodeId`, `userId` | Identity. Every query filters on `userId`. |
-| `sessionId`, `fromEventIndex`, `toEventIndex` | Pointer to the raw events, so detail is fetched without duplicating them |
+| `sessionId`, `ranges` | Pointer to the raw events: a list of (from, to) message ranges inside one session, so detail is fetched without duplicating them |
 | `startTs`, `endTs` | Time filtering ("last week") |
 | `title` | One line, shown in lists |
 | `summary` | About 100 to 150 words, written by the model |
@@ -82,9 +85,17 @@ a missed write (see doc 03).
 
 ### 3.6 Written by the batch job
 
-The same lazy batch job as the profile (same watermark and lease per session) produces episodes. Whether it
-makes one call with two outputs (profile operations plus episodes) or two separate calls is open; leaning
-toward two separate calls at first, because each is easier to test on its own.
+The same lazy batch job as the profile produces episodes, using the same change check (the message count when
+the session was last processed) and the same 30-minute settle rule (see doc 03, section 4.2). When a session
+has changed, **all of its episodes are regenerated from the whole session**: the episodes are a function of the
+session. Episode IDs are predictable (session ID plus position), so a rerun overwrites instead of duplicating,
+and leftover episodes beyond the new count are deleted. No lease is needed.
+
+How the model is used: it receives the numbered messages of the session and returns topics, each with its
+message ranges, title, summary, entities, topics and decisions. Code validates the answer (ranges exist, none
+overlaps, count within the cap, chit-chat dropped). If validation fails, the fallback is **one episode over
+the whole session**. Whether the job makes one call with two outputs (profile operations plus episodes) or two
+separate calls is open; leaning toward two separate calls at first, because each is easier to test on its own.
 
 ## 4. Industry context (from general knowledge; verify before quoting)
 
