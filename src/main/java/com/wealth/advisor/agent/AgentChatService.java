@@ -5,6 +5,7 @@ import com.wealth.advisor.constants.SessionStateKeys;
 import com.wealth.advisor.guardrails.GuardrailChain;
 import com.wealth.advisor.guardrails.GuardrailVerdict;
 import com.wealth.advisor.logging.LogContext;
+import com.wealth.advisor.memory.ConversationReader;
 import com.wealth.advisor.util.AdkContentText;
 import com.google.adk.events.Event;
 import com.google.adk.runner.Runner;
@@ -83,6 +84,7 @@ public class AgentChatService {
 	private final AgentAuditRecorder agentAuditRecorder;
 	private final ToolUsageRecorder toolUsageRecorder;
 	private final GuardrailChain guardrailChain;
+	private final ConversationReader conversationReader;
 	private final int maxTitleLength;
 	private final int maxListed;
 	// (userId, sessionId) pairs with a turn running right now. ADK doesn't serialize turns within
@@ -97,6 +99,7 @@ public class AgentChatService {
 			AgentAuditRecorder agentAuditRecorder,
 			ToolUsageRecorder toolUsageRecorder,
 			GuardrailChain guardrailChain,
+			ConversationReader conversationReader,
 			AdvisorProperties properties) {
 		this.maxTitleLength = properties.chat().maxTitleLength();
 		this.maxListed = properties.chat().maxListedSessions();
@@ -106,6 +109,7 @@ public class AgentChatService {
 		this.agentAuditRecorder = agentAuditRecorder;
 		this.toolUsageRecorder = toolUsageRecorder;
 		this.guardrailChain = guardrailChain;
+		this.conversationReader = conversationReader;
 		log.info(
 				"AgentChatService ready: appName='{}', pipeline={} -> {}",
 				runner.appName(),
@@ -269,28 +273,9 @@ public class AgentChatService {
 	}
 
 	private List<ChatMessage> messagesOf(String userId, Session session) {
-		List<ChatMessage> messages = new ArrayList<>();
-		boolean lastWasAgentReply = false;
-		for (Event event : session.events()) {
-			String text = AdkContentText.textOf(event);
-			if (text.isEmpty()) {
-				continue;
-			}
-			// FirestoreSessionService stores the user's own events with author == userId, not the
-			// literal "user" ADK uses in-memory — accept both.
-			if ("user".equals(event.author()) || userId.equalsIgnoreCase(event.author())) {
-				messages.add(new ChatMessage("user", text));
-				lastWasAgentReply = false;
-			} else if (agent2Name.equals(event.author())) {
-				// A later final-agent event in the same turn supersedes an earlier one.
-				if (lastWasAgentReply) {
-					messages.remove(messages.size() - 1);
-				}
-				messages.add(new ChatMessage("agent", text));
-				lastWasAgentReply = true;
-			}
-		}
-		return messages;
+		return conversationReader.read(userId, session).stream()
+				.map(m -> new ChatMessage(m.role(), m.text()))
+				.toList();
 	}
 
 	public void deleteSession(String userId, String sessionId) {

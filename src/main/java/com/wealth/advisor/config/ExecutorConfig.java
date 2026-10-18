@@ -30,4 +30,13 @@ public class ExecutorConfig {
   public ExecutorService priceLookupExecutor() {
     return Executors.newVirtualThreadPerTaskExecutor();
   }
+
+  /**
+   * Runs the background memory job (see {@code MemoryExtractionJob}) off the request thread. Virtual
+   * threads for the same reason as above: the job mostly waits on Firestore and model calls.
+   */
+  @Bean
+  public ExecutorService memoryExecutor() {
+    return Executors.newVirtualThreadPerTaskExecutor();
+  }
 }

@@ -16,13 +16,8 @@ class ScopeClassifierGuardrailTest {
 	private static AdvisorProperties withFailClosed(boolean failClosed) {
 		AdvisorProperties d = TestProperties.defaults();
 		AdvisorProperties.Guardrails g = d.guardrails();
-		return new AdvisorProperties(
-				d.model(),
-				d.chat(),
-				d.compaction(),
-				d.memory(),
-				new AdvisorProperties.Guardrails(
-						g.enabled(), g.classifierModel(), failClosed, g.historyMessages(), g.refusalMessage()));
+		return d.withGuardrails(new AdvisorProperties.Guardrails(
+				g.enabled(), g.classifierModel(), failClosed, g.historyMessages(), g.refusalMessage()));
 	}
 
 	private static ScopeClassifierGuardrail classifier(UnaryOperator<String> model, boolean failClosed) {

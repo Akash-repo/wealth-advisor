@@ -168,6 +168,10 @@ deleteSessionButton.addEventListener('click', async () => {
 	await refreshSessions(null);
 });
 
+// Starts the server's background memory job for this user (learning from earlier conversations). It
+// returns at once and runs while the user types; a failure here must never affect the chat.
+fetch('/api/memory/refresh', { method: 'POST' }).catch(() => {});
+
 refreshDocuments();
 refreshSessions('latest').then(() => {
 	if (currentSessionId) openSession(currentSessionId);

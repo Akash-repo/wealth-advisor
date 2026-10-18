@@ -75,3 +75,31 @@ advisor:
     history-messages: 4
     # Shown for any rejected message; the same text for every layer, so it reveals nothing about which one fired.
     refusal-message: "I can only help with investing, your portfolio and personal finance. Ask me about your holdings, a stock, or how to think about saving and allocation."
+  profile:
+    # Reads conversations and proposes preference changes (a plain model call, no tools).
+    extractor-model: gemini-2.5-flash-lite
+    # Cap on the profile block put in the agents' prompts, and on active entries per user.
+    max-words: 500
+    max-entries: 60
+    # Proposed changes below this confidence are not applied.
+    confidence-threshold: 0.6
+  extraction:
+    # A session is only read once its last message is older than this, so a half-finished
+    # conversation is not summarised.
+    settle-minutes: 30
+    max-sessions-per-run: 10
+  episodes:
+    extractor-model: gemini-2.5-flash-lite
+    embedding-model: gemini-embedding-001
+    embedding-dimensions: 768
+    max-per-session: 8
+    max-search-results: 5
+    # Search results scoring below this are not returned.
+    min-score: 0.25
+    recency-half-life-days: 30
+    # What a search with window "any" covers.
+    default-window-days: 365
+    details-max-chars: 6000
+    similarity-weight: 0.6
+    entity-weight: 0.3
+    recency-weight: 0.1

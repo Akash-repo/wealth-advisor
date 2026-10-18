@@ -20,15 +20,10 @@ class GuardrailChainTest {
 	}
 
 	private static AdvisorProperties withEnabled(boolean enabled) {
-		AdvisorProperties.Guardrails g = TestProperties.defaults().guardrails();
 		AdvisorProperties d = TestProperties.defaults();
-		return new AdvisorProperties(
-				d.model(),
-				d.chat(),
-				d.compaction(),
-				d.memory(),
-				new AdvisorProperties.Guardrails(
-						enabled, g.classifierModel(), g.failClosed(), g.historyMessages(), g.refusalMessage()));
+		AdvisorProperties.Guardrails g = d.guardrails();
+		return d.withGuardrails(new AdvisorProperties.Guardrails(
+				enabled, g.classifierModel(), g.failClosed(), g.historyMessages(), g.refusalMessage()));
 	}
 
 	@Test

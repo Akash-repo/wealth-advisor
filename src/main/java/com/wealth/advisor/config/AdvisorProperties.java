@@ -1,6 +1,8 @@
 package com.wealth.advisor.config;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
@@ -27,7 +29,15 @@ public record AdvisorProperties(
 		@NotNull @Valid Chat chat,
 		@NotNull @Valid Compaction compaction,
 		@NotNull @Valid Memory memory,
-		@NotNull @Valid Guardrails guardrails) {
+		@NotNull @Valid Guardrails guardrails,
+		@NotNull @Valid Profile profile,
+		@NotNull @Valid Extraction extraction,
+		@NotNull @Valid Episodes episodes) {
+
+	/** A copy with different guardrail settings; the other groups are unchanged. */
+	public AdvisorProperties withGuardrails(Guardrails replacement) {
+		return new AdvisorProperties(model, chat, compaction, memory, replacement, profile, extraction, episodes);
+	}
 
 	/** Which Gemini model each job uses. */
 	public record Model(@NotBlank String chat, @NotBlank String extraction) {}
@@ -56,4 +66,40 @@ public record AdvisorProperties(
 			boolean failClosed,
 			@Positive int historyMessages,
 			@NotBlank String refusalMessage) {}
+
+	/**
+	 * The user preference profile: {@code extractorModel} reads conversations, operations below
+	 * {@code confidenceThreshold} are not applied, {@code maxWords} caps the block injected into the
+	 * agents' prompts and {@code maxEntries} caps active entries per user.
+	 */
+	public record Profile(
+			@NotBlank String extractorModel,
+			@Positive int maxWords,
+			@Positive int maxEntries,
+			@DecimalMin("0.0") @DecimalMax("1.0") double confidenceThreshold) {}
+
+	/**
+	 * The background job that turns finished conversations into profile entries and episodes: a
+	 * session is read only once it has been quiet for {@code settleMinutes}, and at most {@code
+	 * maxSessionsPerRun} sessions are processed per run.
+	 */
+	public record Extraction(@Positive int settleMinutes, @Positive int maxSessionsPerRun) {}
+
+	/**
+	 * Episodic memory: topic summaries of past conversations. {@code defaultWindowDays} is what an
+	 * unbounded search covers; the three weights make up the hybrid score and are applied as given.
+	 */
+	public record Episodes(
+			@NotBlank String extractorModel,
+			@NotBlank String embeddingModel,
+			@Positive int embeddingDimensions,
+			@Positive int maxPerSession,
+			@Positive int maxSearchResults,
+			@DecimalMin("0.0") @DecimalMax("1.0") double minScore,
+			@Positive int recencyHalfLifeDays,
+			@Positive int defaultWindowDays,
+			@Positive int detailsMaxChars,
+			@DecimalMin("0.0") double similarityWeight,
+			@DecimalMin("0.0") double entityWeight,
+			@DecimalMin("0.0") double recencyWeight) {}
 }

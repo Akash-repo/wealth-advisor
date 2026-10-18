@@ -20,6 +20,10 @@ public final class TestProperties {
 						"gemini-2.5-flash-lite",
 						true,
 						4,
-						"I can only help with investing, your portfolio and personal finance. Ask me about your holdings, a stock, or how to think about saving and allocation."));
+						"I can only help with investing, your portfolio and personal finance. Ask me about your holdings, a stock, or how to think about saving and allocation."),
+				new AdvisorProperties.Profile("gemini-2.5-flash-lite", 500, 60, 0.6),
+				new AdvisorProperties.Extraction(30, 10),
+				new AdvisorProperties.Episodes(
+						"gemini-2.5-flash-lite", "gemini-embedding-001", 768, 8, 5, 0.25, 30, 365, 6000, 0.6, 0.3, 0.1));
 	}
 }
