@@ -29,6 +29,7 @@ file grows as new questions come up.
 - [Real market data](#real-market-data)
 - [BigQuery audit log](#bigquery-audit-log)
 - [Input guardrails](#input-guardrails)
+- [Long-term memory](#long-term-memory)
 - [Logging and traceability](#logging-and-traceability)
 - [Evals](#evals)
 - [Environment variables](#environment-variables)
@@ -190,7 +191,9 @@ or the vector distances are meaningless.
 |   -> SequentialAgent (wealthAdvisorPipeline)          |
 |        portfolio_analysis -> stock_recommendation     |
 |        tools: getStockData, getPortfolioHoldings,      |
-|               getPortfolioAllocation, loadMemory      |
+|               getPortfolioAllocation,                 |
+|               searchPastConversations,                |
+|               getEpisodeDetails                       |
 |                                                       |
 | PortfolioController -> PortfolioService               |
 |   (PdfTextReader -> HoldingsExtractionService         |
@@ -282,7 +285,10 @@ holdings](#portfolio-holdings) for the design.
    - `getStockData` — real price + fundamentals (P/E, PEG, forward P/E, EPS growth, free cash
      flow per share) by ticker, from Financial Modeling Prep behind a 24h Firestore cache; see
      [Real market data](#real-market-data).
-   - `loadMemory` — keyword search over the user's earlier conversations (guarded, capped).
+   - `searchPastConversations` / `getEpisodeDetails` — find and read summaries of the user's earlier
+     conversations; see [Long-term memory](#long-term-memory).
+   Before every model call of both stages, the user's saved preference profile (if any) is added to
+   the instructions as background data.
    It writes a short analysis into session state under `portfolio_analysis`.
 4. **Stage 2 — `stock_recommendation`**: its instruction has `{portfolio_analysis}` substituted
    in, so it "reads" stage 1's analysis as plain text, and writes the final, user-facing reply
@@ -358,6 +364,25 @@ also carry `documentType` and `chunkCount`; they are ignored.
 
 See [Real market data](#real-market-data) for the full design (why Firestore, why a 24h TTL, how
 partial FMP failures are handled).
+
+### `user_preferences` — one preference profile per user (this app's own collection)
+
+Document id = the user id. Field `entries` is a list of maps: `category`, `value`, `status`
+(`ACTIVE`, `REMOVED_BY_USER`, `REMOVED_BY_CONVERSATION`), `source` (`EXTRACTED`, `MANUAL`),
+`firstSeen`, `lastConfirmed`, `evidenceAt` (timestamps), `sessionId`, `evidenceQuote`. Removed entries
+stay in the list. See [Long-term memory](#long-term-memory).
+
+### `episodes` — topic summaries of past conversations (this app's own collection)
+
+Document id = `<sessionId>__<position>`, so regenerating a session overwrites its episodes. Fields:
+`userId`, `sessionId`, `ranges` (list of `{from, to}` message numbers), `startTs`, `endTs`, `title`,
+`summary`, `tickers`, `sectors`, `topics`, `decisions`, `embedding` (a Firestore vector value),
+`createdAt`. Queried by `userId` (and `sessionId`) equality only, so no composite index is needed.
+
+### `memory_extraction_state` — what the memory job has already processed (this app's own collection)
+
+Document id = `<userId>__<sessionId>`: `userId`, `sessionId`, `processedUpdateTime` (the session's
+last-update time when it was processed), `processedAt`.
 
 ### ADK's own collections (managed by `FirestoreSessionService`, not our code)
 
@@ -875,13 +900,18 @@ is not literally deterministic, so a single green run isn't itself proof a fix h
 
 ## Sessions and memory
 
-A user can have many conversations. Three ADK concepts are in play, and they are easy to blur:
+A user can have many conversations. Memory comes in three layers:
 
-| Layer | What it is | Class | Scope |
+| Layer | What it is | Where | Scope |
 |---|---|---|---|
-| Short-term | One conversation's events + state | `FirestoreSessionService` / `Session` | one `(app, userId, sessionId)` |
-| Long-term | Keyword search over a user's past events | `FirestoreMemoryService` (`BaseMemoryService`) | all of one user's sessions |
-| Agent access | The model decides to search | `LoadMemoryTool` | called by `portfolio_analysis` |
+| Short-term | One conversation's events + state | `FirestoreSessionService` / `Session` (ADK) | one `(app, userId, sessionId)` |
+| Profile | Durable facts about the user ("no energy stocks", "retire around 2035") | `user_preferences`, added to the prompts | one user, all conversations |
+| Episodes | Topic summaries of past conversations | `episodes`, searched by two agent tools | one user, all conversations |
+
+The profile and episodes are described in [Long-term memory](#long-term-memory). ADK's own
+`MemoryService` / `LoadMemoryTool` (a keyword search over raw events) is **not used any more**: it
+returned unranked, unbounded text, needed a Firestore index that was never created, and the model had
+to remember to call it.
 
 **Multi-session.** `POST /api/chat` takes an optional `sessionId`; omitted means "start a new
 conversation" and the server mints a UUID (title = first message) and returns it. Ownership is
@@ -894,22 +924,6 @@ change used `sessionId == userId`; they still resolve and appear in the list as 
 `TurnKey(userId, sessionId)`, not `userId`. Keyed by user alone, two tabs would overwrite each
 other's invocation id (`AgentAuditRecorderTest` pins this).
 
-**What `FirestoreMemoryService` really does** (read from the 1.7.0 sources, not the docs):
-- `addSessionToMemory` is a **no-op**. `FirestoreSessionService` already writes a `keywords` array
-  on every appended event, so memory is just a query over those events — no ingest step.
-- `searchMemory` runs a collection-group query on `user-event` filtered by `appName`, `userId`,
-  and `keywords array-contains-any <query words minus stop words>`. Keyword match only — no
-  embeddings, no ranking, **no result limit**, and it includes the current session and the agent's
-  own replies. A broad query can return a lot of text into the model's context.
-- It needs a Firestore collection-group index on `user-event` (`appName`, `userId`, `keywords`).
-  The first query fails with an error containing a console link to create it.
-
-**`GuardedMemoryService`** wraps the real service because two things were found running it live:
-a backend error (e.g. the missing index above) surfaced through `LoadMemoryTool` as a tool
-exception, which failed the whole turn with a 500; and results are unbounded. The wrapper turns an
-error into "no memories" (logged at WARN) and keeps only the 8 most recent entries at 500 chars
-each. Recency is a stand-in ranking, since the backend gives no relevance score.
-
 **`FirestoreSessionService` 1.7.0 quirks** (read from source, confirmed live):
 - `listSessions` returns every session with *empty* state and events — titles need a `getSession`.
 - A user's own events are stored with `author == userId`, not the literal `"user"`.
@@ -918,8 +932,8 @@ each. Recency is a stand-in ranking, since the backend gives no relevance score.
   preferences via `user:` state do **not** work with this session service.
 
 **Not in the Java SDK (1.7.0):** Vertex AI Memory Bank (LLM-extracted, consolidated memories) and
-a `PreloadMemoryTool`. Only `VertexAiSessionService` exists. Extracting durable facts would be our
-own code.
+a `PreloadMemoryTool`. Only `VertexAiSessionService` exists, so the extraction of durable facts is
+this app's own code (below).
 
 ## Input guardrails
 
@@ -965,6 +979,107 @@ database: `gcloud components install cloud-firestore-emulator`, then
 `gcloud emulators firestore start --host-port=localhost:8086`, then run the Maven command above with
 `FIRESTORE_EMULATOR_HOST=localhost:8086` and `-Dtest=GuardrailEvalTest`. BigQuery has no emulator, so
 accepted turns still write audit rows to the real dataset. Each turn takes seconds; the whole class takes a few minutes.
+
+## Long-term memory
+
+Added 2026-10-18. The reasoning behind each choice is in `docs/design/03-user-preferences-memory.md`,
+`04-episodic-memory.md`, `05-memory-implementation-plan.md` (which also keeps the register of what was
+deliberately deferred) and `06-extractor-prompts-draft.md`; an interview-style walk through it is in
+`interview_qa_long_term_memory.md`. The code is in `com.wealth.advisor.memory`.
+
+**Two things are remembered, both learned in the background from finished conversations:**
+
+- a **preference profile**: durable facts the user stated about themselves, in typed slots (excluded
+  sectors from the 11 GICS sectors, excluded industry groups from the 25 GICS groups, excluded tickers,
+  goals and horizon, risk stance, style, and an `other` slot for anything else, such as a theme exclusion
+  like "no tobacco");
+- **episodes**: a short summary, with an embedding, of each topic discussed in a past conversation.
+
+Holdings are deliberately *not* memory: they come from the uploaded statements and the tools compute them
+exactly.
+
+**When it is learned.** The chat page calls `POST /api/memory/refresh` on load (`MemoryController`),
+which returns at once and runs `MemoryExtractionJob` on a background executor. The job lists the user's
+sessions (cheap: no messages loaded) and processes those that have **changed** since the last run (the
+session's last-update time is newer than the one stored in `memory_extraction_state`) and have
+**settled** (no new message for `advisor.extraction.settle-minutes`, 30 by default, so a half-finished
+conversation is not summarised). At most `advisor.extraction.max-sessions-per-run` sessions are done per
+run. For each, the **whole** session is read again and everything derived from it is recomputed: there is
+no bookmark inside a session and no lease, because the writes are idempotent (profile entries are
+upserted by key, episodes have predictable ids). A session that fails is logged and retried on the next
+run. Memory only matters *across* conversations, because within one the full history is already in the
+prompt, so learning a little late costs nothing.
+
+**The preference profile.**
+
+- `PreferenceExtractor` asks a small model (`advisor.profile.extractor-model`) which durable facts the
+  user explicitly stated, as proposed operations (`ADD`, `UPDATE`, `REMOVE`), each with the user's exact
+  quote, the message number and a confidence. It sees only the user's own messages and the current
+  profile, never the assistant's replies or uploaded text. Moods, questions, holdings, hypotheticals and
+  behaviour alone are ignored.
+- `PreferenceReconciler` decides what is applied; the model only proposes. It checks that the quote
+  really appears in that user message, that the value is valid for its category (`PreferenceValues`), and
+  that confidence is at least `advisor.profile.confidence-threshold`. **Newer overrides older by message
+  time, not by processing order**: each entry keeps `evidenceAt`, and an operation is applied only if its
+  message is newer than that, so reprocessing an old conversation after a newer one cannot undo the newer
+  statement. Entries the user typed in (`MANUAL`) are never changed by the extractor.
+- `PreferenceInjector` is a `beforeModelCallback` on **both** agents; it appends the profile (under
+  `advisor.profile.max-words`, exclusions never trimmed) to the system instruction of every model call,
+  labelled as data about the user, not instructions. It is a callback and not part of the agents'
+  instructions because ADK skips `{state}` substitution for an instruction built by a provider (which
+  `stock_recommendation` needs) and a stored text could contain braces. `PreferenceStore` keeps a loaded
+  profile in memory for 15 seconds because the callback runs on every model call.
+- The user sees and edits the profile in the **"What I know about you"** panel (`PreferenceController`,
+  `PreferenceService`, `static/js/preferences.js`). Adding validates exactly like the extractor's output;
+  deleting is a soft delete (`REMOVED_BY_USER`) and counts as evidence at the time of the delete, so an
+  older conversation cannot bring the entry back.
+
+**Episodes.**
+
+- `EpisodeExtractor` asks a small model (`advisor.episodes.extractor-model`) to group the conversation
+  by **topic**. A topic the conversation returned to is one episode with several message ranges. It
+  sees the assistant's replies too, because an episode records what advice was given.
+- `EpisodeValidator` checks and repairs the proposal: ranges are clamped to the messages that exist,
+  never overlap (the earlier episode keeps a contested message), and an episode never spans sessions;
+  tickers and sectors must be valid; there are at most `advisor.episodes.max-per-session`. If the model
+  returned episodes but none survives, one deterministic fallback episode covers the whole conversation.
+- `GenAiEmbedder` embeds each episode's title and summary (`gemini-embedding-001`, 768 dimensions);
+  `EpisodeStore` writes them with predictable ids and removes leftovers of that session.
+- The first agent has two tools. `searchPastConversations(topic, tickers?, window?)` embeds the topic,
+  takes the user's episodes in the window (`past_week`, `past_month`, `past_3_months`, `past_year`,
+  `any` = the last `advisor.episodes.default-window-days`; code turns the word into a start time, the
+  model never does date arithmetic) and ranks them in `EpisodeRanker` with a **hybrid score**:
+  `similarity-weight x similarity + entity-weight x ticker match + recency-weight x recency`. Cosine
+  similarity is rescaled between `similarity-floor` and `similarity-ceiling` because embedding models
+  score unrelated text well above zero, and an episode is only returned if its relevance (the score
+  without recency) reaches `min-score`, so being recent never rescues an unrelated episode.
+  `getEpisodeDetails(episodeId)` loads the original messages of one episode, only if it belongs to the
+  caller, capped at `advisor.episodes.details-max-chars`. Both tools report any failure as "nothing found"
+  and never throw.
+- The similarity search runs in the app over the user's own episodes (hundreds at most), behind
+  `EpisodeSearch`, so it needs no vector index; the vector is stored as a Firestore vector value so an
+  index could be added later without a migration (deferred, `docs/design/05` D18/D19).
+- Deleting a conversation also deletes its episodes and its processing record (`SessionMemoryCleanup`);
+  the profile is kept because it describes the user, not one conversation.
+
+**Keeping model calls repeatable.** The scope classifier and both extractors run at temperature 0 with a
+JSON response schema; a classifier that is only mostly consistent once wrongly refused an ordinary
+preference statement.
+
+**Tests.**
+
+| Test | What it covers | Needs |
+|---|---|---|
+| `VocabularyTest`, `PreferenceProfileTest`, `PreferenceReconcilerTest`, `PreferenceServiceTest`, `PreferenceControllerTest`, `PreferenceInjectorTest`, `PreferenceExtractorTest`, `MemoryExtractionJobTest`, `PromptTemplateTest`, `Episode*Test`, `SearchWindowTest`, `ToolDeclarationsTest` | the rules, with fakes | nothing |
+| `MemoryStoresEmulatorTest` (tag `eval`) | the Firestore stores: transactions, mapping, vectors, isolation | Firestore emulator |
+| `PreferenceExtractorEvalTest`, `EpisodeExtractorEvalTest`, `EpisodeRetrievalEvalTest` (tag `eval`) | the real models: durable vs transient, reversals, interleaved topics, paraphrase retrieval | Gemini credentials |
+| `PreferenceInjectionEvalTest`, `MemoryEndToEndEvalTest` (tag `eval`) | the whole app: a preference stated in a chat is learned, shown, used in a new chat and deletable | emulator + credentials |
+
+Run the evals against the **Firestore emulator**, never the real project:
+`gcloud components install cloud-firestore-emulator`, then `gcloud emulators firestore start
+--host-port=localhost:8086`, then `FIRESTORE_EMULATOR_HOST=localhost:8086 GOOGLE_GENAI_USE_VERTEXAI=true
+GOOGLE_CLOUD_PROJECT=<project> GOOGLE_CLOUD_LOCATION=us-central1 ./mvnw -Dtest=<TestName> test`. BigQuery has
+no emulator, so accepted chat turns in those tests still write audit rows to the real dataset.
 
 ## Logging and traceability
 
@@ -1274,6 +1389,28 @@ These aren't documented anywhere obvious — found by actually running the app, 
    never-ask-just-fetch instruction) and how `PortfolioEvalTest` catches it via a trajectory
    assertion.
 
+9. **A provider-built ADK instruction skips `{state}` substitution, and a global instruction only
+   applies when the root agent is an `LlmAgent`.** Ours is a `SequentialAgent` whose second agent needs
+   `{portfolio_analysis}` filled in, so the preference profile is added with a `beforeModelCallback`
+   instead (`PreferenceInjector`).
+10. **ADK's `onUserMessageCallback` can only replace the user message, and `beforeRunCallback` fires
+   after the message is saved to the session.** Neither can reject a message without leaving it in the
+   history, which is why the input guardrails run at the top of `AgentChatService.chat`.
+11. **Circular dependency: runner, agents, tools.** The `Runner` depends on the agents, so a tool that
+   reads sessions must not depend on the `Runner`. `AdkSessionSource` uses the `BaseSessionService` bean
+   and `AgentConfig.PIPELINE_NAME` instead. No unit test sees this; the app just fails to start.
+12. **Embedding models score unrelated text high.** `gemini-embedding-001` gave 0.43 to 0.54 for
+   completely unrelated queries and 0.64 to 0.73 for good matches, so a raw cosine threshold of 0.25 kept
+   everything. Similarity is rescaled between a floor and a ceiling and relevance is gated before recency
+   counts. Recalibrate with `EpisodeRetrievalEvalTest` if the embedding model changes.
+13. **A model at default temperature is only mostly consistent.** The scope classifier once refused a
+   plain preference statement it had accepted a minute earlier. Classifiers and extractors run at
+   temperature 0.
+14. **Optional fields in a response schema are often left out.** The episode extractor skipped
+   `decisions` until every list field was made required (they may still be empty).
+15. **`mvn test` runs the `eval`-tagged tests too** (nothing in the pom excludes them), and those that
+   start the Spring context fail without Gemini credentials. Use `-DexcludedGroups=eval` for the fast suite.
+
 ## Milestone status
 
 1. ✅ Single agent + one tool + `/api/chat`, in-memory sessions.
@@ -1319,3 +1456,10 @@ These aren't documented anywhere obvious — found by actually running the app, 
 11. ⏳ Cloud Run deployment — not started. Runbook written in [GCP deployment (Cloud
     Run)](#gcp-deployment-cloud-run) ahead of actually doing it, including one still-outstanding
     code prerequisite (`server.port`) called out there.
+12. ✅ Input guardrails (see [Input guardrails](#input-guardrails)) — a fail-fast chain in front of the
+    agents (phrase filter, then a small scope classifier that fails closed); a rejected message is never
+    saved. Verified by `ScopeClassifierEvalTest` and `GuardrailEvalTest`.
+13. ✅ Long-term memory (see [Long-term memory](#long-term-memory)) — a preference profile and episodic
+    memory learned in the background, injected into the agents / searched by tools, with a panel to see
+    and edit the profile. Replaces the keyword-search `loadMemory`. Verified end to end by
+    `MemoryEndToEndEvalTest`.

@@ -1,7 +1,8 @@
 # 03 — User preferences (long-term memory)
 
-Status: **profile (semantic) memory design closed on 2026-10-17, not built. Episodic memory is NOT yet
-discussed** (see open points). Waiting for the go-ahead to implement.
+Status: **built 2026-10-18.** The design below was closed on 2026-10-17; where the build differs from it,
+`05-memory-implementation-plan.md` section 9 ("As built") says how and why. The final prompts are
+`resources/prompts/preference_extractor.txt` and `scope_classifier.txt`.
 
 ## 1. What we want to tackle
 

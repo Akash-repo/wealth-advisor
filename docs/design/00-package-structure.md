@@ -89,8 +89,9 @@ dto/  exception/  util/  security/
 
 **Design rules we hold to (proposed):** SRP per class; depend on an interface at boundaries that
 will change (event recording, guardrails); one injected `ObjectMapper`; patterns only where they
-earn their place — Strategy and Chain of Responsibility for guardrails, Decorator for
-`GuardedMemoryService`-style wrappers, Facade for the chat entry point.
+earn their place — Strategy and Chain of Responsibility for guardrails, Decorator for wrappers
+around library services (the former `GuardedMemoryService`, since retired), Facade for the chat entry
+point.
 
 ## 7. Status
 
@@ -108,6 +109,8 @@ Decisions confirmed 2026-10-11: prompts as resource files, repository layer late
 | Service split (`ChatService` / `ChatSessionService`), `dto/` + `exception/` packages, `@RestControllerAdvice` | Confirmed, **not started** (step 4) |
 | Repository layer | Later — when Topic 5 (analytics tables) needs it |
 | `logging/` package (`LogContext`) and `constants/LogKeys` | **Done** — added with the log-traceability work |
+| `guardrails/` package: `GuardrailChain` runs `InputGuardrail` layers (`HeuristicInputGuardrail`, `ScopeClassifierGuardrail`) | **Done** — 2026-10-17, see ARCHITECTURE.md "Input guardrails" |
+| `memory/` package: preference profile, episodes, background `MemoryExtractionJob`, `PreferenceInjector` | **Done** — 2026-10-18, see ARCHITECTURE.md "Long-term memory" |
 | ArchUnit dependency rules | Proposed, not confirmed |
 
 ### Correction recorded during step 3

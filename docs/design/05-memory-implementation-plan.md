@@ -1,8 +1,8 @@
 # 05 — Memory: implementation plan
 
-Status: **plan only; nothing is built. Owner's decision (2026-10-17): finish discussing every memory point
-first, then implement everything in one pass** (the stages in section 5 remain the internal order, with tests
-per stage). Written 2026-10-17 so that whoever implements it (a later session)
+Status: **built 2026-10-18** (all four stages), in one pass after the discussion was finished, as the owner
+decided on 2026-10-17. Section 9 records how the build differs from this plan. The rest is kept as the plan
+that was followed. Written 2026-10-17 so that whoever implements it (a later session)
 has the whole picture in one place. Read [03 — User preferences](03-user-preferences-memory.md) and
 [04 — Episodic memory](04-episodic-memory.md) for the reasoning; this document is the build plan that ties
 them together. **Implementation starts only when the owner says "go"** (they asked to discuss design before
@@ -129,13 +129,13 @@ remembering deletions, consolidation of a topic across sessions, retention rules
 - [x] Drift 1: the contradiction rule. Settled: only explicit statements act, with a verified evidence quote; no separate mechanism (doc 03, 4.4)
 - [x] Drift 2: staleness by category. **Deferred (D16)**; replaced by the newer-overrides-older rule using `evidenceAt` (doc 03, 4.4)
 - [x] Drift 3: confirm-back for conflicts is not needed (no behavioural inference, D15); confirm-back for age is part of Drift 2
-- [ ] Episodic retrieval: prompt wording for the tool, which agent gets it, the fate of `loadMemory`
-- [ ] Episodes over time: retention or merging (D6), or keep deferred
-- [ ] Review the draft extractor prompts (doc 06)
-- [ ] One extraction call or two
-- [ ] Hybrid score weights and recency decay (defaults now, tune with evals)
-- [ ] Technical verification in section 6 (read-only checks I can run during the discussion)
-- [ ] One combined lifecycle diagram, and the interview Q&A file for the memory question
+- [x] Episodic retrieval: the first agent only gets the two tools; `loadMemory` retired (see section 9)
+- [x] Episodes over time: retention or merging kept deferred (D6)
+- [x] Review the draft extractor prompts (doc 06): reviewed and built (`resources/prompts/`)
+- [x] One extraction call or two: two separate calls
+- [x] Hybrid score weights and recency decay: defaults, then calibrated against the real embedding model
+- [x] Technical verification in section 6: done (section 9)
+- [x] One combined lifecycle diagram (Routing.md section 17) and the interview Q&A (`interview_qa_long_term_memory.md`)
 
 ## 5b. Defaults chosen at build time (2026-10-18; tune with evals)
 
@@ -145,7 +145,7 @@ applied); recency half-life 30 days; minimum search score 0.25; up to 10 session
 returns at most 5 episodes; profile cap about 500 words; episode details capped at about 6,000 characters;
 embedding model chosen after the check in section 6 (default candidate `gemini-embedding-001`).
 
-## 6. Verify before coding
+## 6. Verify before coding (all done; findings in section 9)
 
 1. **Firestore vector search from the Java client** (3.44.0 includes `VectorQuery`) with pre-filters on
    `userId` and time. The earlier embedding implementation is in git history (commit `e5fb66b` removed it) and
@@ -180,7 +180,7 @@ something is deferred**, in the same pass as the decision.
 
 | # | Deferred item | Why deferred | Revisit when | Documented in |
 |---|---|---|---|---|
-| D1 | Remembering user deletions (do not re-add a deleted preference; compare evidence time with `removedAt`) | Rare edge case; user can delete again; soft delete keeps the data | Users report removed entries coming back | doc 03, 6b |
+| D1 | ~~Remembering user deletions~~ **Effectively done:** a UI delete is soft and counts as evidence at the time of the delete, so older conversation evidence cannot re-add it (the `evidenceAt` rule). Original note: remembering user deletions (do not re-add a deleted preference; compare evidence time with `removedAt`) | Rare edge case; user can delete again; soft delete keeps the data | Users report removed entries coming back | doc 03, 6b |
 | D2 | Output check against hard constraints (an excluded sector or ticker must not appear in a recommendation); the guardrails' L4 output layer | Separate build; prompt injection covers the common case | Stage 5, or an exclusion is ever ignored | doc 03, 4.5; ARCHITECTURE.md "Input guardrails" |
 | D3 | A BigQuery audit row for guardrail rejections (only a WARN log with layer and reason exists) | Not needed to ship guardrails | Need to measure false positives at scale | ARCHITECTURE.md "Input guardrails" |
 | D4 | In-turn write tool for preferences (`updatePreferences`) | Decided batch only, to keep it simple | The batch job misses things users expect saved immediately | doc 03, 3.3 |
@@ -198,7 +198,39 @@ something is deferred**, in the same pass as the decision.
 | D17 | Theme/ESG exclusions (tobacco, weapons, fossil fuels) as a first-class category, and the third GICS level (74 industries); today they live in `other` as free text and cannot be enforced by code | The GICS two-level vocabulary does not model them; needs a curated list | Users commonly state theme exclusions, or code-side enforcement (D2) is built | doc 03, 6a; doc 06 |
 | D18 | Narrowing episode search by ticker first (`array-contains-any` on the episode's tickers, with a fallback to the wider scan when few results) and the composite index it needs | Brute force over a user's episodes is enough to start; the index needs approval | Searches get slow | doc 04, 3.7 |
 | D19 | Moving episode similarity search to a Firestore vector index; caching a user's vectors in memory | Hundreds of episodes per user are fine in the app | More than about 1,000 episodes per user, or slow searches | doc 04, 3.7 |
-| D14 | Fate of `loadMemory` / `GuardedMemoryService` once episodes exist, and creating the Firestore composite index it needs | Depends on episodic design; index is an infrastructure change that needs approval | Stage 4 | doc 04, section 5 |
+| D14 | ~~Fate of `loadMemory` / `GuardedMemoryService`, and the Firestore index it needs~~ **Done 2026-10-18:** retired, together with the `advisor.memory` settings; no index needed. Revert commit `d6a4efc` if the old keyword search is wanted back | n/a | n/a | section 9 |
+| D20 | Check that a ticker the model names exists (a market-data lookup) before it is stored as an exclusion or an episode ticker; today only the shape is checked | A lookup costs several FMP calls | A wrong ticker is seen in a profile | doc 03, 4.4 |
+| D21 | Exclude `eval`-tagged tests from the default `mvn test` (surefire `excludedGroups`); today they run too and those that start the Spring context fail without Gemini credentials | Changes how the build behaves | Before wiring up CI | ARCHITECTURE.md Gotchas |
+| D22 | Harder evals for the extractors: other languages, sessions longer than the 300,000-character prompt cap (oldest messages are dropped), instruction-like text inside assistant replies | The current evals cover the designed cases | Before relying on memory more widely | doc 06 |
+| D23 | Known issue, not a design choice: the "Your statements" list in `chat.js` still prints `chunkCount` (`undefined chunk(s)`) after the embedding removal | Outside the memory work | Next UI pass | `static/js/chat.js` |
+
+## 9. As built (2026-10-18)
+
+What differs from the plan above, and what the checks found.
+
+| Plan | As built | Why |
+|---|---|---|
+| Inject the profile with an `Instruction.Provider` | A `beforeModelCallback` (`PreferenceInjector`) on both agents | ADK skips `{state}` substitution for a provider-built instruction (`stock_recommendation` needs it) and does not apply a global instruction when the root agent is a `SequentialAgent` |
+| Change check = the session's message count | The session's **last-update time**, from the cheap session listing | The listing carries it, so a page load does not have to load every session's events |
+| Time window filtered in the query | Filtered in Java after querying by `userId` | Equality plus a range on another field needs a composite index; a user has hundreds of episodes at most |
+| Episode vector as a list of numbers | A Firestore **vector value** | Lets a vector index be added later with no migration; the emulator accepts and returns it |
+| Similarity used as the raw cosine, `min-score` 0.25 | Cosine **rescaled between a floor (0.5) and a ceiling (0.75)**, and an episode is returned only if its relevance without recency reaches `min-score` | `gemini-embedding-001` scored unrelated queries 0.43 to 0.54 and good matches 0.64 to 0.73, so 0.25 kept everything; found by `EpisodeRetrievalEvalTest` |
+| Models at default settings | **Temperature 0** for the scope classifier and both extractors | The classifier once refused an ordinary preference statement it had accepted before |
+| `decisions` optional in the episode schema | Every list field required (may be empty) | The model left `decisions` out even when advice was given |
+| The tools' session reader depends on the `Runner` | `AdkSessionSource` depends on a `BaseSessionService` bean and `AgentConfig.PIPELINE_NAME` | The runner depends on the agents, which depend on the tool: a circular dependency that stopped the app starting (found by the end-to-end eval) |
+| `loadMemory` retired once episodes exist (a recommendation) | Done: `LoadMemoryTool`, `GuardedMemoryService` and `advisor.memory.*` removed | Two overlapping memory tools confuse the model, and the old one needed an index that never existed. **The owner did not explicitly confirm this**; it is one commit (`d6a4efc`) to revert |
+| Ticker names checked against market data | Shape only (regex) | Cost; deferred as D20 |
+| Hard-constraint output check | Not built | Deferred as D2 |
+
+Also added beyond the plan: `PreferenceStore` keeps a loaded profile for 15 seconds (the injector runs on
+every model call); `SessionMemoryCleanup` removes a deleted conversation's episodes and processing record;
+the classifier prompt now names preference statements as in scope.
+
+**Verification** (against the Firestore emulator and the real models): 222 unit tests pass; the live
+evals `PreferenceExtractorEvalTest` (9 cases), `EpisodeExtractorEvalTest` (3), `EpisodeRetrievalEvalTest`
+(3), `ScopeClassifierEvalTest` (23), `PreferenceInjectionEvalTest` (2), `MemoryEndToEndEvalTest` (1: a
+preference stated in a chat is learned, shown in the panel API, used in a new chat, deleted, and not
+brought back) and `MemoryStoresEmulatorTest` (11) pass.
 
 ## 8. Housekeeping when it is built
 

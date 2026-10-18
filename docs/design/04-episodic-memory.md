@@ -1,7 +1,8 @@
 # 04 — Episodic memory
 
-Status: **in discussion, not built.** Decisions below were agreed on 2026-10-17; open points are listed at the
-end. Companion to [03 — User preferences](03-user-preferences-memory.md), which covers the profile (semantic)
+Status: **built 2026-10-18.** Decisions below were agreed on 2026-10-17 and 2026-10-18; where the build differs,
+`05-memory-implementation-plan.md` section 9 ("As built") says how and why. Open points at the end are
+mostly resolved; what remains is in the deferred register there. Companion to [03 — User preferences](03-user-preferences-memory.md), which covers the profile (semantic)
 memory. The two are separate layers.
 
 ## 1. What we want to tackle

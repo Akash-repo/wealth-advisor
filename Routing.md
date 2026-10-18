@@ -2,7 +2,8 @@
 
 How every kind of request is routed: who handles it, what it calls, where data is read and written,
 and what happens when something fails. Written from the code as of branch
-`feature/learn-experiment-adk`; every box below is a real class or collection.
+`feature/learn-experiment-adk`; every box below is a real class or collection. Updated 2026-10-18 for the
+input guardrails and long-term memory.
 
 Companion docs: [ARCHITECTURE.md](ARCHITECTURE.md) (concepts, schema), [Optimization.md](Optimization.md)
 (known gaps), [docs/design/](docs/design/) (design notes).
@@ -27,6 +28,7 @@ Diagrams are [Mermaid](https://mermaid.js.org/); they render on GitHub and in mo
 14. [What is retrieved, and what is deterministic vs probabilistic](#14-what-is-retrieved-and-what-is-deterministic-vs-probabilistic)
 15. [What the prompts control vs what code controls](#15-what-the-prompts-control-vs-what-code-controls)
 16. [Known weak spots in the routing](#16-known-weak-spots-in-the-routing)
+17. [Background memory job](#17-background-memory-job)
 
 ---
 
@@ -40,7 +42,12 @@ flowchart LR
         SEC["Security filter chain<br/>config/SecurityConfig"] --> CTRL["Controllers<br/>web/*"]
         CTRL --> CHAT["AgentChatService<br/>agent/"]
         CTRL --> ING["PortfolioService<br/>portfolio/"]
-        CHAT --> RUN["ADK Runner<br/>config/RunnerConfig"]
+        CHAT --> GUARD["GuardrailChain<br/>guardrails/"]
+        GUARD -->|"allowed"| RUN["ADK Runner<br/>config/RunnerConfig"]
+        CTRL --> MEMJ["MemoryExtractionJob<br/>memory/ (background)"]
+        MEMJ --> FS
+        A1 -. "profile added before each model call" .-> INJ["PreferenceInjector<br/>memory/"]
+        A2 -. "profile added before each model call" .-> INJ
         RUN --> A1["portfolio_analysis<br/>LlmAgent"]
         RUN --> A2["stock_recommendation<br/>LlmAgent"]
         A1 --> TOOLS["Tools<br/>agent/tool/*"]
@@ -53,7 +60,10 @@ flowchart LR
     TOOLS <--> FS
     ING --> FS
     SEC -->|"load user"| FS
-    A1 -->|"generateContent"| GEM(["Vertex AI<br/>Gemini"])
+    GUARD -->|"scope classifier"| GEM(["Vertex AI<br/>Gemini"])
+    MEMJ -->|"extract, summarise, embed"| GEM
+    INJ --> FS
+    A1 -->|"generateContent"| GEM
     A2 -->|"generateContent"| GEM
     RUN -->|"compaction summary"| GEM
     ING -->|"holdings extraction"| GEM
@@ -62,7 +72,8 @@ flowchart LR
 ```
 
 Two sequential agents share one ADK session. Only `portfolio_analysis` has tools. Everything the
-model sees is rebuilt from the session's events on every model call.
+model sees is rebuilt from the session's events on every model call, plus the user's preference
+profile. A message passes the input guardrails before anything is saved or any agent runs.
 
 ---
 
@@ -74,10 +85,14 @@ model sees is rebuilt from the session's events on every model call.
 | `POST /api/auth/login` | public | Spring `formLogin` → `FirestoreUserDetailsService` | Firestore `users/{name}` + BCrypt | 302 → `/index.html` + cookie | redirect to `/login.html?error` |
 | `POST /api/auth/register` | public | `RegistrationController` → `UserRegistrationService` | Firestore `users` | 200 | 409 (invalid or username taken) |
 | `POST /api/auth/logout` | cookie | Spring logout | clears `JSESSIONID` | 302 | — |
-| `POST /api/chat` | required | `ChatController.chat` → `AgentChatService.chat` | full agent turn (sections 3–5) | 200 `{sessionId, reply}` | 400, 401, 404, 409, 429, 500 |
+| `POST /api/chat` | required | `ChatController.chat` → `AgentChatService.chat` | input guardrails, then a full agent turn (sections 3–5) | 200 `{sessionId, reply}`; `sessionId` is `null` when a new conversation's first message is refused | 400, 401, 404, 409, 429, 500 |
 | `GET /api/sessions` | required | `ChatController.sessions` | ADK `listSessions` + per-session `getSession` for titles | 200 list | 401 |
 | `GET /api/sessions/{id}/messages` | required | `ChatController.messages` | ADK `getSession` | 200 list | 401, 404 |
-| `DELETE /api/sessions/{id}` | required | `ChatController.deleteSession` | ADK `deleteSession` | 204 | 401, 404 |
+| `DELETE /api/sessions/{id}` | required | `ChatController.deleteSession` | ADK `deleteSession`, then its episodes and processing record | 204 | 401, 404 |
+| `POST /api/memory/refresh` | required | `MemoryController` | starts `MemoryExtractionJob` in the background (section 17) | 202 | 401 |
+| `GET /api/preferences`, `GET /api/preferences/options` | required | `PreferenceController` → `PreferenceService` | Firestore `user_preferences` | 200 | 401 |
+| `POST /api/preferences` | required | `PreferenceController` → `PreferenceService.add` | Firestore `user_preferences` | 201 | 400 (invalid value or profile full), 401 |
+| `DELETE /api/preferences/{id}` | required | `PreferenceController` → `PreferenceService.remove` | Firestore `user_preferences` (soft delete) | 204 | 401, 404 |
 | `POST /api/portfolio/upload` | required | `PortfolioController` → `PortfolioService.ingest` | section 7 | 200 `{filename, chunksStored}` | 401, **422** (not a portfolio statement), 500 |
 | `GET /api/portfolio/documents` | required | `PortfolioController` | Firestore `portfolio_documents` | 200 list | 401, 500 |
 | `DELETE /api/portfolio/documents/{filename}` | required | `PortfolioController` | batch delete in 3 collections | 200 | 401, 500 |
@@ -112,15 +127,19 @@ sequenceDiagram
     C->>RL: tryAcquire(userId)
     RL-->>C: allowed (20 per minute window)
     C->>CS: chat(userId, sessionId, message)
-    alt no sessionId (new conversation)
+    opt existing sessionId
+        CS->>F: getSession(app, userId, sessionId) to check ownership
+    end
+    CS->>CS: input guardrails: L1 phrase filter, then L2 scope classifier (small model call)
+    Note over CS: if rejected, the canned refusal is returned here: nothing saved, agents never run
+    opt no sessionId (new conversation)
         CS->>F: create session (UUID, title from message)
-    else existing sessionId
-        CS->>F: getSession(app, userId, sessionId)
     end
     CS->>CS: in-flight guard add(userId/sessionId)
     CS->>R: runAsync(userId, sessionId, message) then blockingGet
     R->>F: load session + events, append user event
     R->>A1: run
+    Note over A1,A2: before every model call PreferenceInjector adds the user's profile to the instruction
     loop until a response with no tool call
         A1->>G: generateContent(instruction + history + tool declarations)
         G-->>A1: function call(s) or final text
@@ -161,10 +180,14 @@ flowchart TD
     VAL -- yes --> RATE{"Under 20 requests<br/>in the last minute?"}
     RATE -- no --> E429["429 Too Many Requests<br/>ResponseStatusException"]
     RATE -- yes --> HAS{"sessionId given?"}
-    HAS -- no --> NEW["Create session<br/>UUID + title"]
+    HAS -- no --> GUARD
     HAS -- yes --> OWN{"Session exists<br/>for this user?"}
     OWN -- no --> E404["404 Not Found<br/>ChatSessionNotFoundException<br/>same code for someone else's id"]
-    OWN -- yes --> BUSY
+    OWN -- yes --> GUARD
+    GUARD{"Input guardrails pass?<br/>L1 phrase filter, L2 scope classifier"} -- no --> REFUSED["200 canned refusal<br/>nothing saved, no session created<br/>logged with layer and reason"]
+    GUARD -- yes --> NEWQ{"sessionId given?"}
+    NEWQ -- no --> NEW["Create session<br/>UUID + title"]
+    NEWQ -- yes --> BUSY
     NEW --> BUSY{"Another turn already<br/>running in this session?"}
     BUSY -- yes --> E409["409 Conflict<br/>ChatSessionBusyException"]
     BUSY -- no --> RUN["runner.runAsync<br/>agent 1 then agent 2"]
@@ -182,7 +205,9 @@ What is **not** a failure of the turn, by design:
 
 | Situation | What happens instead |
 |---|---|
-| Long-term memory search errors (e.g. missing Firestore index) | `GuardedMemoryService` returns "no memories", logs WARN, turn continues |
+| The input guardrails reject the message (off-topic, an instruction override, or the classifier itself failed: it fails closed) | `200` with the same canned refusal for every layer; nothing is saved, no agent runs, the layer and reason are logged |
+| A memory lookup fails (embedding call, Firestore) | the tool returns `found: false` with a message, logs WARN, the turn continues |
+| Loading the preference profile fails | the model call goes ahead without it, logs WARN |
 | FMP returns non-200, times out, or no API key is set | `MarketDataService` returns `found: false`; the model is told the data is missing |
 | BigQuery insert fails when finalizing | caught and logged; the user still gets their reply |
 | Tool reports nothing found (`found: false`) | normal tool result, the model decides what to say |
@@ -245,7 +270,8 @@ flowchart LR
     M["Model decides<br/>which tool to call"] --> T1["getStockData(ticker)"]
     M --> T3["getPortfolioHoldings(ticker?)"]
     M --> T4["getPortfolioAllocation(topN?)"]
-    M --> T5["loadMemory(query)"]
+    M --> T5["searchPastConversations(topic, tickers?, window?)"]
+    M --> T6["getEpisodeDetails(episodeId)"]
 
     T1 --> MD["MarketDataService"]
     MD --> CACHE[("Firestore<br/>market_data_cache<br/>24h per ticker")]
@@ -256,9 +282,12 @@ flowchart LR
     T4 --> HOLD
     T4 -- "one task per ticker<br/>virtual-thread executor" --> MD
 
-    T5 --> GMS["GuardedMemoryService<br/>cap 8 entries x 500 chars<br/>errors become empty"]
-    GMS --> FMS["FirestoreMemoryService"]
-    FMS --> EVT[("Firestore collection group<br/>user-event<br/>appName + userId + keywords")]
+    T5 --> EP["EpisodeSearch<br/>window filter, embed the topic,<br/>hybrid score in EpisodeRanker"]
+    EP --> EPS[("Firestore<br/>episodes<br/>filtered by userId")]
+    EP -- "embed the topic" --> EMB(["Vertex AI<br/>embedding model"])
+
+    T6 --> EPS
+    T6 --> SES[("Firestore sessions<br/>the original messages")]
 ```
 
 | Tool | Reads | Writes | Degrades to | Throws on |
@@ -266,7 +295,8 @@ flowchart LR
 | `getStockData` | `market_data_cache`, FMP | `market_data_cache` | `found: false` (no key, non-200, parse error) | — |
 | `getPortfolioHoldings` | `portfolio_holdings` | — | `found: false` | Firestore failure |
 | `getPortfolioAllocation` | `portfolio_holdings`, `market_data_cache`, FMP | cache | per-ticker `pricingUnavailableFor` | Firestore failure |
-| `loadMemory` | `user-event` collection group | — | empty memories | — (guarded) |
+| `searchPastConversations` | `episodes`, the embedding model | — | `found: false` (nothing relevant, or any failure) | — (never throws) |
+| `getEpisodeDetails` | `episodes`, the session's events | — | `found: false` (not yours, missing, or any failure) | — (never throws) |
 
 Every tool takes `userId` from ADK's `ToolContext`, never from a model-supplied argument, so the
 model cannot ask for another user's data.
@@ -589,6 +619,7 @@ flowchart LR
         D4["Session history from Firestore<br/>user, model, tool call, tool result events<br/>(minus anything compacted)"]
         D5["Other agent's events<br/>rewritten as For context text"]
         D6["Agent 2 only:<br/>portfolio_analysis from session state"]
+        D7["The user's preference profile<br/>(PreferenceInjector, under 500 words)"]
     end
 
     subgraph PROB["Added only if the MODEL chooses to call a tool (probabilistic)"]
@@ -596,7 +627,8 @@ flowchart LR
         P2["getPortfolioHoldings: exact share totals"]
         P3["getPortfolioAllocation: value and weight"]
         P4["getStockData: price and fundamentals"]
-        P5["loadMemory: up to 8 past events"]
+        P5["searchPastConversations: up to 5 episode summaries"]
+        P6["getEpisodeDetails: the original messages of one episode"]
     end
 
     DET --> CTX["Context window"]
@@ -604,8 +636,9 @@ flowchart LR
     CTX --> GEM(["Gemini"])
 ```
 
-Not retrieved automatically, ever: **other sessions** (only reachable through `loadMemory`), a
-**user profile** (does not exist yet), and the user's **uploaded documents** (only through a tool).
+Retrieved automatically on every model call: the user's **preference profile**. Not retrieved
+automatically, ever: **other conversations** (only reachable through `searchPastConversations`) and the
+user's **uploaded documents** (only through a tool).
 
 ### Deterministic vs probabilistic, step by step
 
@@ -617,7 +650,11 @@ Not retrieved automatically, ever: **other sessions** (only reachable through `l
 | **Whether** a tool is called | **Probabilistic** | the model decides, steered by the prompt |
 | **Which** tool, and its arguments (ticker, search query, topN) | **Probabilistic** | model output |
 | How many loop iterations | **Probabilistic** | depends on what the model asks for next |
-| The **query text** used for `loadMemory` | **Probabilistic** | written by the model, then keyword-matched |
+| The **topic, tickers and window** passed to `searchPastConversations` | **Probabilistic** | written by the model; the window word is turned into dates by code, the topic is embedded |
+| What `searchPastConversations` returns once called (window filter, similarity, ticker match, recency, ranking) | **Deterministic code over a model embedding** | same episodes and query give the same ranking |
+| The preference profile added to every model call | **Deterministic** | loaded by code, never left to the model to ask for |
+| What is **learned** into the profile and the episodes (by the background job) | **Probabilistic, then checked by code** | a small model proposes; code checks the quote, the value, the confidence and the timestamps before anything is stored |
+| Whether a message is **refused by the guardrails** | **Phrase filter deterministic; scope classifier probabilistic (temperature 0)** | the classifier is a model call, so it can be wrong; it fails closed |
 | What a tool **does** once called (Firestore queries, sums, weights, rankings, forward P/E, cache TTL) | **Deterministic** | plain Java; same data in gives the same answer |
 | Prices and fundamentals | **Deterministic code over external data** | values change as FMP data changes; cached up to 24h |
 | Holdings **extracted from an uploaded PDF** | **Probabilistic** | an LLM turns text into structured rows at upload time; later sums are exact *over those rows* |
@@ -628,7 +665,7 @@ Not retrieved automatically, ever: **other sessions** (only reachable through `l
 
 The practical rule: **retrieval mechanics are deterministic, but the decision to retrieve and the
 words used to retrieve are the model's.** That is why a fact that must always be known (a user's
-risk tolerance, say) should not depend on the model choosing to call a tool.
+risk tolerance, say) is not behind a tool: the preference profile is injected on every model call.
 
 ---
 
@@ -643,7 +680,7 @@ ADK adds a little on top of ours, also as system-instruction text:
 | Added by | Text | Source |
 |---|---|---|
 | ADK `Identity` | `You are an agent. Your internal name is <name>. The description about you is "<description>".` | the agent's `name` and `description` in `AgentConfig` |
-| ADK `LoadMemoryTool` (agent 1 only) | `You have memory ... call loadMemory function with a query.` | built into the tool |
+| `PreferenceInjector` (both agents) | `BACKGROUND ABOUT THIS USER (...)` with the profile, only when the user has one | `PreferenceProfile.promptBlock` |
 | ADK `Instructions` | `{portfolio_analysis}`-style placeholders replaced from session state (agent 2) | session state |
 
 ### What each prompt influences (all of this is probabilistic)
@@ -661,7 +698,9 @@ ADK adds a little on top of ours, also as system-instruction text:
 | What arguments a tool accepts | `@Schema` declarations; ADK rejects a malformed call before our code runs |
 | That both agents run, in order | `SequentialAgent` |
 | Message size, rate limit, session ownership, one turn per session | `ChatRequest`, `ChatRateLimiter`, `AgentChatService` |
-| How much memory the model can receive | `GuardedMemoryService` (8 entries, 500 chars) |
+| How much memory the model can receive | `advisor.profile.max-words` for the profile; `advisor.episodes.max-search-results` and `details-max-chars` for episodes |
+| Whether a message reaches the agents at all | `GuardrailChain` (phrase filter, scope classifier), before anything is saved |
+| What may be written into the profile | `PreferenceReconciler`: verbatim quote, valid value, confidence, newer-than-existing evidence, manual entries untouched |
 | When history is trimmed | compaction thresholds in `advisor.compaction.*` |
 | Exact numbers computed from holdings | tool Java code |
 | What is logged | recorders |
@@ -683,13 +722,48 @@ Stated plainly so the diagrams are not read as a guarantee.
 | # | Weak spot | Why it matters | Status |
 |---|---|---|---|
 | 1 | **Compaction may not persist across turns.** The Firestore session service stores only author, timestamp, content parts and keywords, not the event `actions` where a summary lives. | The summary could be lost on reload and re-created every turn. | Suspected from source, **unverified**; never fired in real data |
-| 2 | **Long-term memory returns nothing until a Firestore index exists.** | `loadMemory` silently degrades to empty. | Index not created; needs approval |
+| 2 | ~~Long-term memory returned nothing until a Firestore index existed.~~ | The keyword-search `loadMemory` was replaced by the episode tools, which query by `userId` only and need no composite index. | **Resolved 2026-10-18** |
 | 3 | **Tool exceptions fail the whole turn** (500). | One flaky Firestore read costs the user the entire answer. | Open |
 | 4 | **In-flight guard and rate limiter are per instance.** | With several Cloud Run instances the same session or user could be served in parallel / exceed the limit. | Open |
 | 5 | **Agent 2 always runs**, even for a plain lookup. | Extra serial model call and tokens per turn. | Under discussion |
 | 6 | **The tool-call loop is effectively unbounded.** `LlmAgent.maxSteps` is not set (default unbounded) and `RunConfig.maxLlmCalls` is ADK's default of 500. | A model stuck re-calling tools runs up cost and latency before anything stops it. | Open; set `maxSteps` per agent |
-| 7 | **No prompt-injection or output guardrails on the request path** beyond log-forging sanitization. | Untrusted text (user input, tool output, uploaded PDFs) reaches the model unfiltered. | Planned (guardrails topic) |
+| 7 | **Input guardrails exist; output guardrails and injection that stays on topic do not.** | A scope classifier cannot catch an on-topic instruction override, and nothing checks the final reply (guarantee language, trade claims). Tool output and uploaded PDFs still reach the model unfiltered. | Output layer ("L4") not built; see `docs/design/05` D2 |
 | 8 | **Stack traces appeared in the 500 JSON in the local run** (DevTools sets this for development). | Must not be present in a production build. | Confirm on the deployed image |
 | 9 | **Audit rows are lost on a crash, and rejected requests are not audited.** | Gaps in the analysis data. | Open (observability topic) |
 | 10 | **ADK-internal and Firestore log lines carry no user or session tag.** | They run on gRPC threads we do not control; our own lines are tagged. | Accepted limit (their messages usually include the session id) |
 | 11 | **Startup logs a generated Spring Security password** (`Using generated security password: ...` at WARN). | A credential in the logs, and a hint that a default in-memory user exists alongside the Firestore-backed login. | **To investigate** in the security and identity topic |
+| 12 | **Memory is learned late.** | Preferences and episodes are only learned after a page load and once a conversation has been quiet for 30 minutes, so something said minutes ago is not yet in the profile of a *new* conversation (within the same conversation it is in the history). | By design (`advisor.extraction.settle-minutes`) |
+| 13 | **The scope classifier can be wrong.** | It is a model call; one ordinary preference statement was once refused before it ran at temperature 0 and had its prompt tightened. A refusal costs the user a turn; a miss lets an off-topic request through. | Monitored by `ScopeClassifierEvalTest`; a held-out set is deferred (`docs/design/05` D13) |
+
+---
+
+## 17. Background memory job
+
+Started when the chat page loads (`POST /api/memory/refresh`), run on the `memoryExecutor` thread pool, never
+on the request thread. One run per user at a time on an instance; overlapping runs are harmless because
+every write is idempotent.
+
+```mermaid
+flowchart TD
+    START(["POST /api/memory/refresh"]) --> ACC["202 Accepted at once"]
+    START --> JOB["MemoryExtractionJob.refresh(userId)"]
+    JOB --> RUNNING{"Already running<br/>for this user?"}
+    RUNNING -- yes --> SKIP["skip"]
+    RUNNING -- no --> LIST["List the user's sessions<br/>(id + last-update time, no messages)"]
+    LIST --> DUE{"Changed since last processed<br/>AND quiet for 30 minutes?"}
+    DUE -- no --> NEXT["leave for a later run"]
+    DUE -- yes --> READ["Read the whole session<br/>(ConversationReader)"]
+    READ --> PREF["PreferenceExtractor: the user's own<br/>messages + current profile → proposed operations"]
+    PREF --> REC["PreferenceReconciler: verbatim quote,<br/>valid value, confidence, newer evidence,<br/>manual entries untouched"]
+    REC --> PROF[("user_preferences")]
+    READ --> EPI["EpisodeExtractor: the whole conversation<br/>→ topics with message ranges"]
+    EPI --> VAL["EpisodeValidator: clamp, no overlaps,<br/>cap, fallback episode"]
+    VAL --> EMB["GenAiEmbedder: embed title + summary"]
+    EMB --> EPS[("episodes<br/>predictable ids, leftovers removed")]
+    PROF --> MARK["Store the session's last-update time<br/>(memory_extraction_state)"]
+    EPS --> MARK
+    PREF -. "any failure" .-> RETRY["session not marked:<br/>retried on the next run"]
+    EPI -. "any failure" .-> RETRY
+```
+
+At most `advisor.extraction.max-sessions-per-run` sessions are processed per run, oldest change first.

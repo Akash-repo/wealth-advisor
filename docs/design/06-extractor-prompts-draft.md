@@ -1,6 +1,9 @@
 # 06 — Extractor prompts (draft for review)
 
-Status: **draft wording, not built, not yet reviewed by the owner.** Written 2026-10-18. When built these become
+Status: **superseded by the built prompts** (2026-10-18): `resources/prompts/preference_extractor.txt`,
+`episode_extractor.txt` and `scope_classifier.txt`. The built versions add the industry-group level, route
+theme exclusions to `other`, ignore hypotheticals, make every list field of an episode required, and run
+at temperature 0. Kept for the reasoning behind each line. Originally written 2026-10-18 as a draft. When built these become
 prompt files in `src/main/resources/prompts/` (the repo convention, loaded by `PromptLoader`), and each gets
 eval cases (doc 03, section 6a, and doc 05). Items marked **PENDING** depend on a decision not yet taken.
 
