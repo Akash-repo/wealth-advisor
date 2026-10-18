@@ -45,6 +45,7 @@ Flow:
 | 9 | Profile categories: excluded sectors (fixed GICS list), excluded tickers, goals and horizon, risk stance, style, `other` | Typed values can be validated and enforced by code |
 | 10 | Profile injected whole, under about 500 words, labelled as data | Small enough to always include; avoids relying on a tool call |
 | 11 | Manual entries are never auto-overridden by the extractor | The user's deliberate edit wins |
+| 11a | Only explicit statements act, with a verified evidence quote; a newer statement overrides an older one by message time (`evidenceAt`), across sessions | Behavioural inference is deferred (D15); processing order must not decide the outcome |
 | 12 | UI delete is a soft delete (`status = REMOVED_BY_USER`, `removedAt`); enforcement of "do not re-add" is **deferred** | Keeps the later fix small; accepted edge case |
 | 13 | An episode = a topic with a list of message ranges inside one session; ranges never overlap; episodes never span sessions | People return to topics; the session is the user-chosen boundary |
 | 14 | One embedding per episode (title plus summary); no chunking | The summary is short; "chunking" is done by episode boundaries |
@@ -126,7 +127,7 @@ remembering deletions, consolidation of a topic across sessions, retention rules
 ## 5a. Remaining discussion agenda (tick off as settled)
 
 - [x] Drift 1: the contradiction rule. Settled: only explicit statements act, with a verified evidence quote; no separate mechanism (doc 03, 4.4)
-- [ ] Drift 2: staleness by category (what lasts forever, what is flagged after how long)
+- [x] Drift 2: staleness by category. **Deferred (D16)**; replaced by the newer-overrides-older rule using `evidenceAt` (doc 03, 4.4)
 - [x] Drift 3: confirm-back for conflicts is not needed (no behavioural inference, D15); confirm-back for age is part of Drift 2
 - [ ] Episodic retrieval: prompt wording for the tool, which agent gets it, the fate of `loadMemory`
 - [ ] Episodes over time: retention or merging (D6), or keep deferred
@@ -181,6 +182,7 @@ something is deferred**, in the same pass as the decision.
 | D12 | Knowledge graph or temporal memory (Zep-style); Vertex AI Memory Bank (not in the Java SDK 1.7.0) | Overkill for a small per-user corpus | Needs relationships or validity periods between facts | doc 03, section 7 |
 | D13 | Held-out guardrail evals with fresh phrasings, other languages, and attacks split across turns (the 17-case eval was partly tuned) | Needs a fair test set | Before relying on the guardrails more widely | ARCHITECTURE.md "Input guardrails"; interview Q&A |
 | D15 | Inferring preferences from behaviour (repeated questions, repeated requests) and the contradiction counter and conflict confirm-back it would need | Riskier second feature; only explicit statements act for now | Users say the system should have noticed a pattern | doc 03, 4.4 |
+| D16 | Staleness handling: a `lastConfirmed` age shown in the injected profile, a 12-month flag for risk stance, style and other, and the agent asking the user to re-confirm | The owner wants it as an enhancement | Users complain about outdated entries influencing advice | doc 03 |
 | D14 | Fate of `loadMemory` / `GuardedMemoryService` once episodes exist, and creating the Firestore composite index it needs | Depends on episodic design; index is an infrastructure change that needs approval | Stage 4 | doc 04, section 5 |
 
 ## 8. Housekeeping when it is built

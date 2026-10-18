@@ -122,6 +122,13 @@ same work twice.
   user's exact words; code verifies the quote appears verbatim in the user's messages and drops the
   operation otherwise. The same rule covers contradictions: there is no separate contradiction mechanism, an
   explicit statement simply produces an `update` or `remove`.
+- **Newer overrides older, by message time, not by processing order** (decided 2026-10-17). Sessions are
+  reprocessed in whatever order they change, so an old session that gets a new message could be re-read after
+  a newer session and wrongly win. Each entry therefore stores `evidenceAt`, the timestamp of the user message
+  that last set or changed it. An operation is applied only if its evidence message is newer than the entry's
+  `evidenceAt`, otherwise it is dropped; operations from several sessions in one run are applied oldest
+  message first. Example: Oct 1 "no finance", Oct 10 "finance is fine now"; a later edit to the Oct 1 session
+  cannot undo the Oct 10 change.
 - **Output:** a list of operations, each `add`, `update`, `remove`, or `ignore`, with a confidence score. A
   low-confidence or ambiguous operation is not applied silently; it should lead the agent to ask the user.
 - **Backfill:** a user with many old sessions must not trigger one huge job. Cap the sessions per run (newest
@@ -248,6 +255,9 @@ oldest-confirmed first, never the exclusions).
 9. An idempotence check: running the same sessions twice produces no duplicate entries.
 
 ## 6b. Deferred on 2026-10-17: remembering deletions
+
+**Note (2026-10-17):** the `evidenceAt` rule in section 4.4 would make the fix below a one-line extension (treat
+a UI delete as evidence at the time of the delete and drop older evidence), so this is cheap to pull forward.
 
 A user-deleted preference could be re-added when an old session that still contains the original sentence is
 processed again. Decided to **accept this edge case for now**; the user can delete it again, and entries show
