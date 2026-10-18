@@ -148,7 +148,7 @@ or `manual`), and the originating session. Old values are kept as history rather
 entries (risk stance) show "last confirmed N months ago" so the agent can ask whether they still hold.
 
 **Hard constraints vs soft preferences.** Exclusions are hard: besides being in the prompt, code should check
-the final answer against them (the market-data tool already returns a sector for a ticker). The other
+the final answer against them (**correction 2026-10-18:** the market-data tool does *not* return a sector today; `MarketDataService` calls only quote, ratios, growth and estimates, and the analysis prompt has the model group sectors from its own knowledge. Code-side enforcement would need a sector source, e.g. FMP's profile endpoint, to be verified including free-tier limits). The other
 categories are soft and only shape the prompt. The output-side check is part of the not-yet-built output
 guardrail layer.
 

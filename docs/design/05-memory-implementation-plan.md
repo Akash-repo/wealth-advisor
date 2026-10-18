@@ -149,6 +149,9 @@ remembering deletions, consolidation of a topic across sessions, retention rules
 5. **Creating the vector index** in the Firestore project is an infrastructure change: ask first. Also note
    the composite index that `loadMemory` needs was never created.
 6. Chat-page load hook in `chat.js`.
+7. **A sector source for code-side enforcement (D2).** The app has no sector data today (corrected 2026-10-18).
+   Check whether FMP's profile endpoint is available on the free tier and what its sector names are (they
+   differ from GICS).
 
 ## 7. Risks and how they are handled
 
