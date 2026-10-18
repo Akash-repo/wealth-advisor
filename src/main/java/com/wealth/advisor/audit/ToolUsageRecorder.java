@@ -1,19 +1,20 @@
 package com.wealth.advisor.audit;
 
+import com.wealth.advisor.constants.BigQueryNames;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.adk.agents.InvocationContext;
+import com.google.adk.plugins.Plugin;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.InsertAllRequest;
 import com.google.cloud.bigquery.InsertAllResponse;
 import com.google.cloud.bigquery.TableId;
+import io.reactivex.rxjava3.core.Maybe;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
@@ -26,15 +27,8 @@ import org.springframework.stereotype.Component;
  * around them. See {@code ARCHITECTURE.md}'s "Tool usage tracking" section for the full design
  * rationale.
  *
- * <p>Wired onto an agent's tool callbacks in {@code AgentConfig}:
- *
- * <pre>{@code
- * LlmAgent.builder()
- *     .beforeToolCallbackSync(toolUsageRecorder::beforeTool)
- *     .afterToolCallbackSync(toolUsageRecorder::afterTool)
- *     .onToolErrorCallbackSync(toolUsageRecorder::onToolError)
- *     .build();
- * }</pre>
+ * <p>An ADK global {@link Plugin}, registered once on the {@code App} in {@code RunnerConfig}, so
+ * every agent's tool calls are recorded without wiring callbacks onto each agent.
  *
  * <p>Each tool call's own row is keyed by ADK's {@code functionCallId} (visible via {@link
  * ToolContext#functionCallId()}) — ADK already assigns this once per real tool invocation, so
@@ -46,12 +40,12 @@ import org.springframework.stereotype.Component;
  * quota as the number of tools/agents grows.
  */
 @Component
-public class ToolUsageRecorder {
+public class ToolUsageRecorder implements Plugin {
 
 	private static final Logger log = LoggerFactory.getLogger(ToolUsageRecorder.class);
 
 	private final BigQuery bigQuery;
-	private final ObjectMapper objectMapper = new ObjectMapper();
+	private final ObjectMapper objectMapper;
 
 	// functionCallId -> the call's start time + what to log once it finishes. Keyed globally
 	// (not per-turn) since a functionCallId is already unique across the whole app.
@@ -59,47 +53,49 @@ public class ToolUsageRecorder {
 	// ADK invocationId (== agent_audit_log.user_prompt_id) -> completed rows for that turn so far.
 	private final Map<String, List<Map<String, Object>>> rowsByUserPromptId = new ConcurrentHashMap<>();
 	// Same secondary index AgentAuditRecorder keeps, for the same reason: AgentChatService only
-	// ever knows the userId, never ADK's invocationId directly.
-	private final Map<String, String> invocationIdByUserId = new ConcurrentHashMap<>();
+	// ever knows (userId, sessionId), never ADK's invocationId directly. Keyed per session, not per
+	// user, because one user can have several sessions running at once.
+	private final Map<String, String> invocationIdByTurnKey = new ConcurrentHashMap<>();
 
-	public ToolUsageRecorder(BigQuery bigQuery) {
+	public ToolUsageRecorder(BigQuery bigQuery, ObjectMapper objectMapper) {
 		this.bigQuery = bigQuery;
+		this.objectMapper = objectMapper;
 	}
 
 	private record PendingCall(
 			String userPromptId, String agentName, String toolName, String inputJson, long startNanos) {}
 
-	/** Registered as an agent's {@code beforeToolCallbackSync}. Never short-circuits the call. */
-	public Optional<Map<String, Object>> beforeTool(
-			InvocationContext invocationContext, BaseTool tool, Map<String, Object> args, ToolContext toolContext) {
-		invocationIdByUserId.put(toolContext.userId(), toolContext.invocationId());
+	@Override
+	public String getName() {
+		return "tool_usage_recorder";
+	}
+
+	/** Never short-circuits the call (an empty result means "carry on"). */
+	@Override
+	public Maybe<Map<String, Object>> beforeToolCallback(
+			BaseTool tool, Map<String, Object> args, ToolContext toolContext) {
+		invocationIdByTurnKey.put(TurnKey.of(toolContext.userId(), toolContext.sessionId()), toolContext.invocationId());
 		pendingByCallId.put(
 				callId(toolContext),
 				new PendingCall(
 						toolContext.invocationId(), toolContext.agentName(), tool.name(), toJson(args), System.nanoTime()));
-		return Optional.empty();
+		return Maybe.empty();
 	}
 
-	/** Registered as an agent's {@code afterToolCallbackSync}. Never overrides the result. */
-	public Optional<Map<String, Object>> afterTool(
-			InvocationContext invocationContext,
-			BaseTool tool,
-			Map<String, Object> args,
-			ToolContext toolContext,
-			Object result) {
+	/** Never overrides the result. */
+	@Override
+	public Maybe<Map<String, Object>> afterToolCallback(
+			BaseTool tool, Map<String, Object> args, ToolContext toolContext, Map<String, Object> result) {
 		recordCompletion(toolContext, "SUCCESS", toJson(result), null);
-		return Optional.empty();
+		return Maybe.empty();
 	}
 
-	/** Registered as an agent's {@code onToolErrorCallbackSync}. Never suppresses the error. */
-	public Optional<Map<String, Object>> onToolError(
-			InvocationContext invocationContext,
-			BaseTool tool,
-			Map<String, Object> args,
-			ToolContext toolContext,
-			Exception error) {
+	/** Never suppresses the error: the turn still fails exactly as it would without recording. */
+	@Override
+	public Maybe<Map<String, Object>> onToolErrorCallback(
+			BaseTool tool, Map<String, Object> args, ToolContext toolContext, Throwable error) {
 		recordCompletion(toolContext, "ERROR", null, error.getMessage());
-		return Optional.empty();
+		return Maybe.empty();
 	}
 
 	private void recordCompletion(ToolContext toolContext, String status, String outputJson, String errorMessage) {
@@ -135,10 +131,12 @@ public class ToolUsageRecorder {
 	 * that turn's accumulated tool-call rows to BigQuery in a single batched write, and forget this
 	 * turn's in-memory state. A no-op (no BigQuery call at all) for turns that called no tools.
 	 *
-	 * @param userId not ADK's invocationId itself — see {@link #invocationIdByUserId}
+	 * @param userId with {@code sessionId}, not ADK's invocationId itself — see {@link
+	 *     #invocationIdByTurnKey}
+	 * @param sessionId the session the turn ran in
 	 */
-	public void finalizeTurn(String userId) {
-		String invocationId = invocationIdByUserId.remove(userId);
+	public void finalizeTurn(String userId, String sessionId) {
+		String invocationId = invocationIdByTurnKey.remove(TurnKey.of(userId, sessionId));
 		List<Map<String, Object>> rows = invocationId == null ? null : rowsByUserPromptId.remove(invocationId);
 		if (rows == null || rows.isEmpty()) {
 			return;
@@ -147,7 +145,7 @@ public class ToolUsageRecorder {
 		try {
 			InsertAllRequest.Builder request =
 					InsertAllRequest.newBuilder(
-							TableId.of(AuditSchemaInitializer.DATASET, ToolUsageSchemaInitializer.INVOCATIONS_TABLE));
+							TableId.of(BigQueryNames.DATASET, BigQueryNames.TOOL_INVOCATIONS));
 			rows.forEach(request::addRow);
 			InsertAllResponse response = bigQuery.insertAll(request.build());
 			if (response.hasErrors()) {

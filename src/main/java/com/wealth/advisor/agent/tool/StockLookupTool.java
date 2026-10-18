@@ -1,7 +1,9 @@
 package com.wealth.advisor.agent.tool;
 
 import com.google.adk.tools.Annotations.Schema;
+import com.google.adk.tools.ToolContext;
 import java.util.Map;
+import com.wealth.advisor.logging.LogContext;
 import org.springframework.stereotype.Component;
 
 /**
@@ -10,7 +12,7 @@ import org.springframework.stereotype.Component;
  * ARCHITECTURE.md}'s "Real market data" section for the full design.
  *
  * <p>Spring-managed instance tool (constructor-injected with {@link MarketDataService}), same
- * shape as {@link PortfolioSearchTool} — registered in {@code AgentConfig} with the {@code
+ * shape as {@link PortfolioHoldingsTool} — registered in {@code AgentConfig} with the {@code
  * instance, "..."} overload, not {@code Class, "..."}:
  *
  * <pre>{@code
@@ -36,7 +38,10 @@ public class StockLookupTool {
 					"Looks up a stock's current price and key fundamentals: P/E ratio, PEG ratio, forward"
 							+ " P/E, EPS growth, and free cash flow per share. Data may be up to a day stale.")
 	public Map<String, Object> getStockData(
-			@Schema(name = "ticker", description = "Stock ticker symbol, e.g. NVDA or AAPL") String ticker) {
-		return marketDataService.getStockData(ticker);
+			@Schema(name = "ticker", description = "Stock ticker symbol, e.g. NVDA or AAPL") String ticker,
+			ToolContext toolContext) {
+		try (LogContext.Scope ignored = LogContext.forTool(toolContext)) {
+			return marketDataService.getStockData(ticker);
+		}
 	}
 }

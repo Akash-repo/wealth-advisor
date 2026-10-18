@@ -1,5 +1,8 @@
 package com.wealth.advisor.agent.tool;
 
+import com.wealth.advisor.constants.FirestoreFields;
+import com.wealth.advisor.logging.LogContext;
+import com.wealth.advisor.constants.FirestoreCollections;
 import com.google.adk.tools.Annotations.Schema;
 import com.google.adk.tools.ToolContext;
 import com.google.cloud.firestore.Firestore;
@@ -36,7 +39,7 @@ import org.springframework.stereotype.Component;
  * MarketDataService} itself already uses for its 4 FMP endpoints, for the same reason: a handful
  * of sequential blocking price lookups would otherwise sum their latency instead of overlapping
  * it. Dispatched on the dedicated {@code priceLookupExecutor} bean ({@link
- * com.wealth.advisor.infra.ExecutorConfig}) rather than the JVM-wide {@code
+ * com.wealth.advisor.config.ExecutorConfig}) rather than the JVM-wide {@code
  * ForkJoinPool.commonPool()} {@code CompletableFuture.supplyAsync(...)} would otherwise silently
  * use — see that class's javadoc and {@code Optimization.md} P1-5 for why that mattered here
  * specifically (each task blocks on real network I/O, and the common pool's default parallelism is
@@ -78,12 +81,17 @@ public class PortfolioAllocationTool {
 							optional = true)
 					Integer topN,
 			ToolContext toolContext) {
-		String userId = toolContext.userId();
+		try (LogContext.Scope ignored = LogContext.forTool(toolContext)) {
+			return allocation(toolContext.userId(), topN);
+		}
+	}
+
+	private Map<String, Object> allocation(String userId, Integer topN) {
 		log.debug("getPortfolioAllocation(userId='{}', topN={})", userId, topN);
 
 		List<QueryDocumentSnapshot> docs;
 		try {
-			docs = firestore.collection("portfolio_holdings").whereEqualTo("userId", userId).get().get().getDocuments();
+			docs = firestore.collection(FirestoreCollections.PORTFOLIO_HOLDINGS).whereEqualTo(FirestoreFields.USER_ID, userId).get().get().getDocuments();
 		} catch (InterruptedException | ExecutionException e) {
 			Thread.currentThread().interrupt();
 			log.error("Portfolio holdings query failed for userId='{}'", userId, e);
@@ -104,7 +112,8 @@ public class PortfolioAllocationTool {
 										t -> t,
 										t ->
 												CompletableFuture.supplyAsync(
-														() -> marketDataService.getStockData(t), priceLookupExecutor)));
+														LogContext.propagating(() -> marketDataService.getStockData(t)),
+														priceLookupExecutor)));
 		CompletableFuture.allOf(priceFutures.values().toArray(new CompletableFuture[0])).join();
 
 		Map<String, Double> valueByTicker = new LinkedHashMap<>();

@@ -36,7 +36,7 @@ class ChatRequestTest {
 
   @Test
   void normalMessage_hasNoViolations() {
-    ChatRequest request = new ChatRequest("Can I invest in Nvidia?");
+    ChatRequest request = new ChatRequest(null, "Can I invest in Nvidia?");
 
     Set<ConstraintViolation<ChatRequest>> violations = validator.validate(request);
 
@@ -45,7 +45,7 @@ class ChatRequestTest {
 
   @Test
   void blankMessage_isRejected() {
-    ChatRequest request = new ChatRequest("   ");
+    ChatRequest request = new ChatRequest(null, "   ");
 
     Set<ConstraintViolation<ChatRequest>> violations = validator.validate(request);
 
@@ -54,7 +54,7 @@ class ChatRequestTest {
 
   @Test
   void messageOverTheLimit_isRejected() {
-    ChatRequest request = new ChatRequest("a".repeat(ChatRequest.MAX_MESSAGE_LENGTH + 1));
+    ChatRequest request = new ChatRequest(null, "a".repeat(ChatRequest.MAX_MESSAGE_LENGTH + 1));
 
     Set<ConstraintViolation<ChatRequest>> violations = validator.validate(request);
 
@@ -63,10 +63,16 @@ class ChatRequestTest {
 
   @Test
   void messageAtExactlyTheLimit_isAllowed() {
-    ChatRequest request = new ChatRequest("a".repeat(ChatRequest.MAX_MESSAGE_LENGTH));
+    ChatRequest request = new ChatRequest(null, "a".repeat(ChatRequest.MAX_MESSAGE_LENGTH));
 
     Set<ConstraintViolation<ChatRequest>> violations = validator.validate(request);
 
     assertThat(violations).isEmpty();
+  }
+
+  @Test
+  void sessionIdIsOptionalButBounded() {
+    assertThat(validator.validate(new ChatRequest("abc-123", "hi"))).isEmpty();
+    assertThat(validator.validate(new ChatRequest("x".repeat(65), "hi"))).isNotEmpty();
   }
 }

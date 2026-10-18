@@ -21,32 +21,55 @@
 
 	<div class="card mb-3">
 		<div class="card-body">
-			<h6 class="card-subtitle mb-2 text-muted">Upload portfolio documents</h6>
+			<h6 class="card-subtitle mb-2 text-muted">Upload portfolio statements</h6>
 			<form id="upload-form" class="row g-2 align-items-center">
 				<div class="col-12 col-sm">
 					<input id="portfolio-file" type="file" class="form-control form-control-sm" accept="application/pdf" multiple required>
 				</div>
 				<div class="col-auto">
-					<select id="document-type" class="form-select form-select-sm">
-						<option value="brokerage">Brokerage statement</option>
-						<option value="resume">Resume</option>
-						<option value="bank_statement">Bank statement</option>
-						<option value="other">Other</option>
-					</select>
-				</div>
-				<div class="col-auto">
 					<button type="submit" class="btn btn-sm btn-primary">Upload</button>
 				</div>
 			</form>
+			<div class="form-text mt-1">PDF brokerage or portfolio statements only. Add one per account.</div>
 			<div id="upload-status" class="form-text mt-1"></div>
 		</div>
 	</div>
 
 	<div class="card mb-3">
 		<div class="card-body">
-			<h6 class="card-subtitle mb-2 text-muted">Your documents</h6>
+			<h6 class="card-subtitle mb-2 text-muted">Your statements</h6>
 		</div>
 		<ul id="documents-list" class="list-group list-group-flush"></ul>
+	</div>
+
+	<div class="card mb-3">
+		<div class="card-body">
+			<h6 class="card-subtitle mb-2 text-muted">What I know about you</h6>
+			<div class="form-text">Learned from your conversations. Delete anything that is wrong, or add your own.</div>
+		</div>
+		<ul id="preferences-list" class="list-group list-group-flush"></ul>
+		<div class="card-body border-top">
+			<form id="preference-form" class="row g-2 align-items-center">
+				<div class="col-12 col-sm-4">
+					<select id="preference-category" class="form-select form-select-sm" aria-label="Kind of preference"></select>
+				</div>
+				<div class="col-12 col-sm">
+					<select id="preference-value-select" class="form-select form-select-sm d-none" aria-label="Value"></select>
+					<input id="preference-value-text" type="text" class="form-control form-control-sm" maxlength="200" aria-label="Value">
+				</div>
+				<div class="col-auto">
+					<button type="submit" class="btn btn-sm btn-primary">Add</button>
+				</div>
+			</form>
+			<div id="preference-status" class="form-text mt-1"></div>
+		</div>
+	</div>
+
+	<div class="input-group input-group-sm mb-2">
+		<label class="input-group-text" for="session-select">Conversation</label>
+		<select id="session-select" class="form-select"></select>
+		<button id="new-session" type="button" class="btn btn-outline-primary">New chat</button>
+		<button id="delete-session" type="button" class="btn btn-outline-danger">Delete</button>
 	</div>
 
 	<div id="chat-log" class="border rounded-3 p-3 mb-3 bg-white" style="height: 24rem; overflow-y: auto;"></div>
@@ -60,5 +83,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js" integrity="sha384-FKyoEForCGlyvwx9Hj09JcYn3nv7wiPVlz7YYwJrWVcXK/BmnVDxM+D2scQbITxI" crossorigin="anonymous"></script>
 <script src="/js/chat.js"></script>
+<script src="/js/preferences.js"></script>
 </body>
 </html>

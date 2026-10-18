@@ -1,5 +1,7 @@
 package com.wealth.advisor.security;
 
+import com.wealth.advisor.config.SecurityConfig;
+import com.wealth.advisor.constants.FirestoreCollections;
 import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;
 import java.util.concurrent.ExecutionException;
@@ -31,8 +33,7 @@ import org.springframework.stereotype.Service;
  * {
  *   "email": "demo@example.com",
  *   "passwordHash": "$2a$10$...",   // bcrypt; added here, not in the original BRD schema
- *   "createdAt": <timestamp>,
- *   "hasUploadedPortfolio": false
+ *   "createdAt": <timestamp>
  * }
  * }</pre>
  */
@@ -51,7 +52,7 @@ public class FirestoreUserDetailsService implements UserDetailsService {
 	public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
 		DocumentSnapshot snapshot;
 		try {
-			snapshot = firestore.collection("users").document(username).get().get();
+			snapshot = firestore.collection(FirestoreCollections.USERS).document(username).get().get();
 		} catch (InterruptedException | ExecutionException e) {
 			Thread.currentThread().interrupt();
 			log.error("Failed to look up user '{}' in Firestore", username, e);

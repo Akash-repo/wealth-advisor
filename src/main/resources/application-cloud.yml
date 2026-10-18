@@ -1,0 +1,9 @@
+# Activated on Cloud Run with SPRING_PROFILES_ACTIVE=cloud. Local runs keep the readable text format.
+#
+# One JSON object per log line, shaped for Cloud Logging (severity, timestamp, message, plus
+# userId / sessionId / requestId and the trace link as fields), so logs can be filtered by field:
+#   jsonPayload.userId="demo" AND severity>=WARNING
+logging:
+  structured:
+    format:
+      console: com.wealth.advisor.logging.GoogleCloudLogFormatter

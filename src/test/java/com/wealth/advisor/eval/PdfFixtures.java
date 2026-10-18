@@ -13,7 +13,7 @@ import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 
 /**
  * Converts a plain-text eval fixture into real PDF bytes at test run time, using PDFBox's own
- * write API — the same library {@code PortfolioIngestionService} uses to <em>read</em> uploaded
+ * write API — the same library {@code PdfTextReader} uses to <em>read</em> uploaded
  * PDFs, so generating fixtures doesn't need a second PDF dependency. See
  * {@code src/test/resources/eval-fixtures/README.md} for what each fixture is designed to prove,
  * and {@code ARCHITECTURE.md}'s eval-design discussion for why the PDF is generated fresh every

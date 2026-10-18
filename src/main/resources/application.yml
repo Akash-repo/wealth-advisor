@@ -1,0 +1,106 @@
+spring:
+  application:
+    name: advisor
+  servlet:
+    multipart:
+      # Statement PDFs only. Boot's default is 1MB, which a multi-page statement can exceed.
+      max-file-size: 10MB
+      max-request-size: 10MB
+
+server:
+  # Cloud Run injects PORT and health-checks whatever port that is; falls back to the same 8080
+  # as before when PORT is unset (i.e. every local run).
+  port: ${PORT:8080}
+  servlet:
+    session:
+      cookie:
+        # Mitigates CSRF for this same-origin app without needing CSRF tokens; see SecurityConfig.
+        same-site: lax
+
+gcp:
+  # GCP project used for the Firestore client (see FirestoreConfig). Any placeholder value works
+  # when pointed at the Firestore emulator (FIRESTORE_EMULATOR_HOST) instead of real Firestore.
+  project-id: ${GCP_PROJECT_ID:wealth-agent-local}
+
+wealth:
+  # Seeded by DemoUserSeeder on startup so there's a user to log in with. Override before using
+  # this beyond local dev.
+  demo-user:
+    username: ${DEMO_USER_USERNAME:demo}
+    password: ${DEMO_USER_PASSWORD:changeme}
+
+fmp:
+  # Financial Modeling Prep API key for MarketDataService — free tier, get one at
+  # financialmodelingprep.com. Never committed; if unset, stock lookups degrade to
+  # found=false rather than failing the whole chat turn (see MarketDataService).
+  api-key: ${FMP_API_KEY:}
+
+logging:
+  pattern:
+    # Appended to every line by Spring Boot's default console pattern: [requestId userId sessionId].
+    # Values come from LogContext/MDC; a field that is not set on that thread prints empty.
+    correlation: "[%X{requestId:-} %X{userId:-} %X{sessionId:-}] "
+  level:
+    # Surfaces the DEBUG-level log.debug(...) calls added across this app's own classes (tool
+    # invocations, session lookups, statement uploads, etc.) — useful alongside stepping through
+    # breakpoints in a debugger. Doesn't affect ADK/Firestore/Spring's own logging verbosity.
+    com.wealth.advisor: DEBUG
+
+# Tunables bound to AdvisorProperties. This file is the single source of truth: there are no
+# defaults in code, and a missing or non-positive value fails startup. Override per environment
+# with relaxed-binding env vars, e.g. ADVISOR_COMPACTION_TOKENTHRESHOLD.
+advisor:
+  model:
+    chat: gemini-2.5-flash
+    extraction: gemini-2.5-flash
+  chat:
+    max-requests-per-minute: 20
+    max-listed-sessions: 50
+    max-title-length: 60
+  compaction:
+    token-threshold: 50000
+    event-retention-size: 20
+  guardrails:
+    # Master switch for the input guardrail chain (L1 heuristics, then L2 scope classifier).
+    enabled: true
+    # Small, cheap model for the L2 scope classifier — a gate in front of the agents, not a stage in them.
+    classifier-model: gemini-2.5-flash-lite
+    # If the classifier call itself fails: true = refuse the message (fail closed), false = let it
+    # through (fail open, logged).
+    fail-closed: true
+    # How many of the most recent accepted messages the classifier sees for context.
+    history-messages: 4
+    # Shown for any rejected message; the same text for every layer, so it reveals nothing about which one fired.
+    refusal-message: "I can only help with investing, your portfolio and personal finance. Ask me about your holdings, a stock, or how to think about saving and allocation."
+  profile:
+    # Reads conversations and proposes preference changes (a plain model call, no tools).
+    extractor-model: gemini-2.5-flash-lite
+    # Cap on the profile block put in the agents' prompts, and on active entries per user.
+    max-words: 500
+    max-entries: 60
+    # Proposed changes below this confidence are not applied.
+    confidence-threshold: 0.6
+  extraction:
+    # A session is only read once its last message is older than this, so a half-finished
+    # conversation is not summarised.
+    settle-minutes: 30
+    max-sessions-per-run: 10
+  episodes:
+    extractor-model: gemini-2.5-flash-lite
+    embedding-model: gemini-embedding-001
+    embedding-dimensions: 768
+    max-per-session: 8
+    max-search-results: 5
+    # Search results scoring below this are not returned.
+    min-score: 0.25
+    recency-half-life-days: 30
+    # What a search with window "any" covers.
+    default-window-days: 365
+    details-max-chars: 6000
+    similarity-weight: 0.6
+    entity-weight: 0.3
+    recency-weight: 0.1
+    # gemini-embedding-001 scores unrelated text around 0.45 to 0.55 and good matches 0.65 to 0.75, so
+    # cosine similarity is rescaled between these before it is blended (see EpisodeRetrievalEvalTest).
+    similarity-floor: 0.5
+    similarity-ceiling: 0.75

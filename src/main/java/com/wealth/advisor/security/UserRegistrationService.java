@@ -1,5 +1,6 @@
 package com.wealth.advisor.security;
 
+import com.wealth.advisor.constants.FirestoreCollections;
 import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.Firestore;
@@ -19,7 +20,7 @@ import org.springframework.stereotype.Service;
  *
  * <pre>{@code
  * userRegistrationService.register("akash", "akash@example.com", "hunter22");
- * // -> writes users/akash = {email, passwordHash (bcrypt), createdAt, hasUploadedPortfolio: false}
+ * // -> writes users/akash = {email, passwordHash (bcrypt), createdAt}
  * }</pre>
  *
  * <p>The username becomes the Firestore document id directly (same convention as {@link
@@ -62,7 +63,7 @@ public class UserRegistrationService {
 					"Password must be at least " + MIN_PASSWORD_LENGTH + " characters.");
 		}
 
-		DocumentReference userRef = firestore.collection("users").document(username);
+		DocumentReference userRef = firestore.collection(FirestoreCollections.USERS).document(username);
 		try {
 			// Not transactional — a learning-app simplification. Two concurrent signups for the
 			// same username could theoretically both pass this check; not worth a Firestore
@@ -76,8 +77,7 @@ public class UserRegistrationService {
 							Map.of(
 									"email", email,
 									"passwordHash", passwordEncoder.encode(password),
-									"createdAt", Timestamp.now(),
-									"hasUploadedPortfolio", false))
+									"createdAt", Timestamp.now()))
 					.get();
 		} catch (InterruptedException | ExecutionException e) {
 			Thread.currentThread().interrupt();

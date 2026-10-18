@@ -1,5 +1,6 @@
 package com.wealth.advisor.agent.tool;
 
+import com.wealth.advisor.constants.FirestoreCollections;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.MissingNode;
@@ -56,17 +57,21 @@ public class MarketDataService {
 
 	private static final Logger log = LoggerFactory.getLogger(MarketDataService.class);
 
-	private static final String CACHE_COLLECTION = "market_data_cache";
 	private static final Duration CACHE_TTL = Duration.ofHours(24);
 	private static final String FMP_BASE_URL = "https://financialmodelingprep.com/stable";
 
 	private final Firestore firestore;
 	private final HttpClient httpClient = HttpClient.newHttpClient();
-	private final ObjectMapper objectMapper = new ObjectMapper();
+	private final ObjectMapper objectMapper;
 	private final String apiKey;
 	private final ContentSanitizer contentSanitizer;
 
-	public MarketDataService(Firestore firestore, @Value("${fmp.api-key:}") String apiKey, ContentSanitizer contentSanitizer) {
+	public MarketDataService(
+			Firestore firestore,
+			@Value("${fmp.api-key:}") String apiKey,
+			ContentSanitizer contentSanitizer,
+			ObjectMapper objectMapper) {
+		this.objectMapper = objectMapper;
 		this.firestore = firestore;
 		this.apiKey = apiKey;
 		this.contentSanitizer = contentSanitizer;
@@ -230,7 +235,7 @@ public class MarketDataService {
 
 	private Optional<Map<String, Object>> readCache(String symbol) {
 		try {
-			DocumentSnapshot doc = firestore.collection(CACHE_COLLECTION).document(symbol).get().get();
+			DocumentSnapshot doc = firestore.collection(FirestoreCollections.MARKET_DATA_CACHE).document(symbol).get().get();
 			if (!doc.exists()) {
 				return Optional.empty();
 			}
@@ -250,7 +255,7 @@ public class MarketDataService {
 
 	private void writeCache(String symbol, Map<String, Object> data) {
 		try {
-			firestore.collection(CACHE_COLLECTION).document(symbol).set(data).get();
+			firestore.collection(FirestoreCollections.MARKET_DATA_CACHE).document(symbol).set(data).get();
 		} catch (Exception e) {
 			// Not fatal — the caller already has the freshly fetched data regardless of whether
 			// this write succeeded; the only cost is the next request re-fetching from FMP.

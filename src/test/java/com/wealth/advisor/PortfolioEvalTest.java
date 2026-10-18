@@ -319,7 +319,6 @@ class PortfolioEvalTest {
 						return fixtureName + ".pdf";
 					}
 				});
-		body.add("documentType", "brokerage");
 
 		HttpHeaders headers = new HttpHeaders();
 		headers.addAll(sessionHeaders);

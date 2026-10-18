@@ -1,0 +1,7 @@
+Extract every individual stock or ETF holding mentioned in the following document.
+For each holding found, report its ticker symbol, the number of shares held, its cost
+basis per share if the document states one, and the brokerage/account name if the
+document states one. If this document contains no stock/ETF holdings at all (e.g. it's
+a resume or a bank statement), return an empty array — do not invent holdings.
+
+Document text:

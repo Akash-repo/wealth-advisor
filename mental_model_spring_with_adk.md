@@ -5,6 +5,12 @@ to a real agentic system — this app, not a hypothetical. Every code reference 
 real file in this repo. Where a Spring concept isn't actually used here (e.g., prototype scope,
 Spring Data `@Repository`), that's stated explicitly, with the real reason, rather than invented.
 
+> **Update (2026-10-16):** per-user embeddings and the `searchPortfolio` tool were removed (uploads are
+> now portfolio statements parsed straight into structured holdings), and the audit recorders became
+> ADK global plugins. Passages below that show `searchPortfolio`, `PortfolioSearchTool` or
+> `PortfolioIngestionService` describe the earlier design; the current flow is in
+> [Routing.md](Routing.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
+
 This is a living document — tell me which section to go deeper on and we'll walk the real code
 together.
 
@@ -143,16 +149,22 @@ public class TimingAspect {
 
 **Where this app deliberately does *not* use AOP, and why that's the correct call, not an
 oversight**: cross-cutting concerns around Gemini calls and tool calls (latency, tokens, audit
-trail) are handled instead by `AgentAuditRecorder`/`ToolUsageRecorder`, wired as **ADK's own native
-callbacks** directly on `LlmAgent.builder()` in `AgentConfig`:
+trail) are handled instead by `AgentAuditRecorder`/`ToolUsageRecorder`, which implement **ADK's
+own `Plugin` interface** and are registered once, globally, on the `App` in `RunnerConfig`:
 
 ```java
-.beforeModelCallbackSync(agentAuditRecorder::beforeModel)
-.afterModelCallbackSync(agentAuditRecorder::afterModel)
-.beforeToolCallbackSync(toolUsageRecorder::beforeTool)
-.afterToolCallbackSync(toolUsageRecorder::afterTool)
-.onToolErrorCallbackSync(toolUsageRecorder::onToolError)
+App.builder()
+    .rootAgent(wealthAdvisorPipeline)
+    .plugins(agentAuditRecorder, toolUsageRecorder)   // ADK calls them for EVERY agent
+    .build();
+// Plugin methods the recorders implement:
+//   beforeModelCallback / afterModelCallback        (AgentAuditRecorder)
+//   beforeToolCallback / afterToolCallback / onToolErrorCallback   (ToolUsageRecorder)
 ```
+
+(Earlier versions wired five `.beforeModelCallbackSync(...)`-style callbacks onto each `LlmAgent`;
+a global plugin removes that per-agent wiring. Gotcha: with a `Runner` built from an `App`,
+register plugins on the `App` — `Runner.Builder.plugins(...)` throws once an app is set.)
 
 A Spring `@Aspect` around `ChatController.chat()` or `AgentChatService.chat()` can only ever see
 "one whole HTTP request/method call happened, it took X ms total." It has no visibility into what
@@ -397,16 +409,16 @@ AgentChatService.chat(userId, message)                [agent/AgentChatService.ja
         ▼
 Runner (ADK)                                          — invocationId generated once for this turn
    Stage 1: portfolio_analysis (LlmAgent)
-      beforeModelCallbackSync → AgentAuditRecorder.beforeModel   [captured to BigQuery later]
+      plugin beforeModelCallback → AgentAuditRecorder   [captured to BigQuery later]
       model call → decides to call a tool
-      beforeToolCallbackSync  → ToolUsageRecorder.beforeTool
+      plugin beforeToolCallback  → ToolUsageRecorder
       PortfolioAllocationTool.getPortfolioAllocation(topN, ToolContext)
          toolContext.userId() → scopes the Firestore query, never model-supplied
          Firestore: portfolio_holdings WHERE userId = ...
          MarketDataService.getStockData(ticker) per distinct ticker (cache → FMP on miss)
-      afterToolCallbackSync   → ToolUsageRecorder.afterTool
+      plugin afterToolCallback   → ToolUsageRecorder
       model call reacts to tool result → writes text to session state under "portfolio_analysis"
-      afterModelCallbackSync  → AgentAuditRecorder.afterModel
+      plugin afterModelCallback  → AgentAuditRecorder
    Stage 2: stock_recommendation (LlmAgent)
       instruction has {portfolio_analysis} substituted in
       model call → final user-facing reply

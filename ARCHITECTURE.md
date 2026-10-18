@@ -10,6 +10,14 @@ everything else builds on it. See also [FAQ.md](FAQ.md) for practical questions 
 way (how to run it locally, worked examples of how the DB queries actually work, etc.) — that
 file grows as new questions come up.
 
+> **Update (2026-10-16): embeddings and vector search were removed.** Statements are tables of
+> positions, and the numbers come from structured holdings, so the chunk/embed/`searchPortfolio`
+> path (the least-used tool, and an extra failure point on every upload) is gone. Uploads are now
+> portfolio statements only, parsed straight into `portfolio_holdings`. Sections below describe the
+> **current** behavior except where marked *historical* (the RAG concept note, the
+> `portfolio_vectors` schema, the vector-index gotcha, and design-decision / milestone entries
+> from before the change). See [Routing.md](Routing.md) for the current request routing.
+
 ## Table of contents
 
 - [What this app does](#what-this-app-does)
@@ -20,6 +28,9 @@ file grows as new questions come up.
 - [Portfolio holdings](#portfolio-holdings)
 - [Real market data](#real-market-data)
 - [BigQuery audit log](#bigquery-audit-log)
+- [Input guardrails](#input-guardrails)
+- [Long-term memory](#long-term-memory)
+- [Logging and traceability](#logging-and-traceability)
 - [Evals](#evals)
 - [Environment variables](#environment-variables)
 - [GCP deployment (Cloud Run)](#gcp-deployment-cloud-run)
@@ -154,14 +165,14 @@ This app's `wealthAdvisorPipeline` (in `AgentConfig`) is exactly this: `portfoli
 deliberately returns only the *last* text-bearing event to the user — agent 1's intermediate
 analysis is consumed by agent 2 via the placeholder, not shown directly.
 
-### RAG (Retrieval-Augmented Generation), in this app specifically
+### RAG (Retrieval-Augmented Generation) — *historical*
 
-"RAG" here means: chunk an uploaded PDF, embed each chunk into a vector, store the vectors, and
-at query time embed the *question* and ask Firestore for the nearest-matching chunks — those
-chunks get stuffed into the prompt as context so the model can answer using real data it was
-never trained on. See `PortfolioIngestionService` (writing) and `PortfolioSearchTool` (reading).
-Both sides **must** use the same embedding model (`text-embedding-004` here) — otherwise the
-vector distances are meaningless.
+This app used to chunk an uploaded PDF, embed each chunk, store the vectors, and at query time
+embed the *question* and fetch the nearest chunks into the prompt. That pipeline was removed
+(2026-10-16): the structured holdings tools answer every portfolio question exactly, and the
+retrieval path was the least-used tool. RAG may return for a shared knowledge corpus (for example
+investing principles); if so, both the writing and reading sides must use the same embedding model,
+or the vector distances are meaningless.
 
 ## Architecture diagram
 
@@ -179,30 +190,31 @@ vector distances are meaningless.
 | ChatController -> AgentChatService -> Runner          |
 |   -> SequentialAgent (wealthAdvisorPipeline)          |
 |        portfolio_analysis -> stock_recommendation     |
-|        tools: getStockData, searchPortfolio,          |
-|               getPortfolioHoldings (RAG)               |
+|        tools: getStockData, getPortfolioHoldings,      |
+|               getPortfolioAllocation,                 |
+|               searchPastConversations,                |
+|               getEpisodeDetails                       |
 |                                                       |
-| PortfolioController -> PortfolioIngestionService      |
-|   (PDFBox parse -> TextChunker -> EmbeddingService    |
-|    -> HoldingsExtractionService)                      |
+| PortfolioController -> PortfolioService               |
+|   (PdfTextReader -> HoldingsExtractionService         |
+|    -> PortfolioStatementStore)                        |
 |                                                       |
-| AgentAuditRecorder + ToolUsageRecorder (before/after  |
-|   model + tool callbacks, wired in AgentConfig)       |
+| AgentAuditRecorder + ToolUsageRecorder (ADK global    |
+|   plugins, registered on the App in RunnerConfig)     |
 +-------------------------------------------------------+
                             |
           +-----------------+------------------+
           v                                     v                          v
    Firestore                           BigQuery: wealth_agent      Financial Modeling Prep
-   users, portfolio_vectors,           .agent_audit_log            (getStockData's real
-   portfolio_holdings,                 .tool_invocations            price/fundamentals —
-   portfolio_documents,                .tool_registry                the one non-ADC
-   market_data_cache, adk-session/*    (1 row/turn, 1 row/tool call) credential, FMP_API_KEY)
-   (auth, RAG chunks, exact
-    holdings, upload metadata,
-    24h stock cache, ADK sessions)
+   users, portfolio_holdings,          .agent_audit_log            (getStockData's real
+   portfolio_documents,                .tool_invocations            price/fundamentals —
+   market_data_cache, adk-session/*    .tool_registry                the one non-ADC
+   (auth, exact holdings, upload       (1 row/turn, 1 row/tool call) credential, FMP_API_KEY)
+    metadata, 24h stock cache,
+    ADK sessions)
                             |
                             v
-          Gemini 2.5 Flash + text-embedding-004
+                 Gemini 2.5 Flash
                    (Vertex AI, via ADC)
 ```
 
@@ -210,7 +222,8 @@ vector distances are meaningless.
 `portfolio_analysis` has tools — `stock_recommendation` has none, it just reads
 `{portfolio_analysis}`'s output. See [Agentic AI / ADK concepts](#agentic-ai--adk-concepts) above
 for what each box/arrow means. `AgentAuditRecorder`/`ToolUsageRecorder` sit outside the request
-path proper — they're model-call/tool-call callbacks fired by ADK itself, not something
+path proper — they're ADK global plugins (model-call and tool-call callbacks ADK fires for every
+agent, registered once on the `App` in `RunnerConfig`), not something
 `AgentChatService` calls directly except once, at the very end of a turn, to flush each
 recorder's accumulated rows. See [BigQuery audit log](#bigquery-audit-log). Financial Modeling
 Prep is the one external, non-GCP call this app makes — see [Real market
@@ -234,42 +247,48 @@ per-message.)*
 4. On success, Spring Security issues an `HttpOnly`, `SameSite=Lax` `JSESSIONID` cookie and
    redirects to `index.html`.
 
-### 2. Document upload (RAG ingestion + holdings extraction)
+### 2. Document upload (statement to holdings)
 
-Upload is optional (chat works without it — `searchPortfolio`/`getPortfolioHoldings` just report
-`found: false`), and a user can upload any number of documents of any type — brokerage statements
-from multiple accounts, a resume, a bank statement. See [Portfolio holdings](#portfolio-holdings)
-for the full design.
+Upload is optional (chat works without it — the holdings and allocation tools just report
+`found: false`). A user can upload any number of **portfolio statements**, typically one per
+brokerage account; anything else (a resume, a bank statement) is rejected. See [Portfolio
+holdings](#portfolio-holdings) for the design.
 
-1. Authenticated `POST /api/portfolio/upload` (multipart, `file` + `documentType`) hits
+1. Authenticated `POST /api/portfolio/upload` (multipart, `file` only) hits
    `PortfolioController`, once per file — the frontend loops over however many files were selected.
-2. `PortfolioIngestionService.ingest`:
-   - Extracts text from the PDF (PDFBox's `Loader.loadPDF` + `PDFTextStripper`).
-   - Splits it into ~250-word chunks (`TextChunker`), embeds each (`EmbeddingService`, Gemini
-     `text-embedding-004`), writes them to `portfolio_vectors` — unchanged from before, and
-     **additive**: a new upload never deletes a prior one's chunks, so multiple brokerage
-     statements coexist and all contribute to RAG search.
-   - Runs `HoldingsExtractionService` over the same extracted text to pull out structured holdings
-     (ticker, shares, cost basis, account), written to `portfolio_holdings` — a resume or bank
-     statement just yields zero holdings, not an error.
-   - Writes one `portfolio_documents` metadata record for this upload (so it can be listed/deleted
-     as a unit — see `DELETE /api/portfolio/documents/{filename}`).
-   - Sets `users/{userId}.hasUploadedPortfolio = true`.
+2. `PortfolioService.ingest` runs three small steps, each in its own class:
+   - `PdfTextReader` reads the PDF's text. A file that can't be read as a PDF, or has no text (a
+     scanned image), is rejected with **HTTP 422**.
+   - `HoldingsExtractionService` asks Gemini for the holdings (structured output: ticker, shares,
+     cost basis, account) as typed `Holding` records. A model failure is a server error; **no
+     holdings found means it is not a portfolio statement: HTTP 422, and nothing is stored.** This
+     is how "statements only" is enforced — by outcome, since a client-supplied type label proves
+     nothing.
+   - `PortfolioStatementStore` saves the holdings to `portfolio_holdings` and one
+     `portfolio_documents` record in a single atomic batch (the record goes last, so a statement
+     only appears once all its holdings are stored). Statements are listed and deleted as a unit —
+     see `GET`/`DELETE /api/portfolio/documents`.
 
-### 3. Chat (the two-agent RAG pipeline)
+### 3. Chat (the two-agent pipeline)
 
 1. Authenticated `POST /api/chat` hits `ChatController`, which calls
    `AgentChatService.chat(authenticatedUsername, message)` — note the userId comes from the
    *authenticated principal*, never from the request body.
-2. `AgentChatService` ensures a Firestore-backed ADK session exists for this user (session id =
-   user id — one continuous conversation per user, no need to juggle multiple session ids), then
-   calls `runner.runAsync(...)`.
+2. `AgentChatService` first checks the conversation is the user's (anyone else's id is a 404), then
+   runs the [input guardrails](#input-guardrails) on the message. A rejected message returns the
+   canned refusal and stops there — nothing is saved. Otherwise it creates the session if new (UUID,
+   titled from the first message) and calls `runner.runAsync(...)`. See
+   [Sessions and memory](#sessions-and-memory).
 3. **Stage 1 — `portfolio_analysis`**: the model reads the conversation, and can call:
-   - `searchPortfolio` — embeds the user's question, runs a Firestore vector `findNearest` query
-     scoped to `whereEqualTo("userId", toolContext.userId())`, returns the closest chunks.
+   - `getPortfolioHoldings` — exact share totals per ticker across all the user's statements.
+   - `getPortfolioAllocation` — each position's current value and % weight, ranked.
    - `getStockData` — real price + fundamentals (P/E, PEG, forward P/E, EPS growth, free cash
      flow per share) by ticker, from Financial Modeling Prep behind a 24h Firestore cache; see
      [Real market data](#real-market-data).
+   - `searchPastConversations` / `getEpisodeDetails` — find and read summaries of the user's earlier
+     conversations; see [Long-term memory](#long-term-memory).
+   Before every model call of both stages, the user's saved preference profile (if any) is added to
+   the instructions as background data.
    It writes a short analysis into session state under `portfolio_analysis`.
 4. **Stage 2 — `stock_recommendation`**: its instruction has `{portfolio_analysis}` substituted
    in, so it "reads" stage 1's analysis as plain text, and writes the final, user-facing reply
@@ -277,8 +296,8 @@ for the full design.
 5. `AgentChatService` walks the turn's events backwards and returns the last non-empty text
    found — stage 2's reply, not stage 1's intermediate analysis.
 6. Independently of all that, every real call *either* agent makes to Gemini during the turn is
-   captured by `AgentAuditRecorder`'s `beforeModelCallbackSync`/`afterModelCallbackSync` (wired
-   onto both agents in `AgentConfig`) — request JSON, response JSON, latency, token counts. Once
+   captured by `AgentAuditRecorder`'s `beforeModelCallback`/`afterModelCallback` (an ADK global
+   plugin registered on the `App` in `RunnerConfig`, so it sees both agents) — request JSON, response JSON, latency, token counts. Once
    the turn ends (success or thrown exception — `AgentChatService.chat` finalizes from a `finally`
    block), those accumulated calls are written as one row to BigQuery. See [BigQuery audit
    log](#bigquery-audit-log).
@@ -293,21 +312,11 @@ for the full design.
 | `email`               | string    | seeded as `{username}@example.com` by `DemoUserSeeder`      |
 | `passwordHash`        | string    | bcrypt — **not** in the original design doc's schema, added because real auth needs a password |
 | `createdAt`           | timestamp |                                                             |
-| `hasUploadedPortfolio`| boolean   | set `true` after a successful upload                        |
 
-### `portfolio_vectors` — RAG chunks (this app's own collection)
+### `portfolio_vectors` — *removed* (2026-10-16)
 
-| Field       | Type              | Notes                                              |
-|-------------|-------------------|-----------------------------------------------------|
-| *(doc id)*  | auto-generated    |                                                      |
-| `userId`    | string            | indexed — pre-filter before the vector search        |
-| `filename`  | string            | original uploaded filename                           |
-| `chunkText` | string            | the ~250-word chunk, returned as RAG context         |
-| `embedding` | vector (768 floats)| from `text-embedding-004`                            |
-| `createdAt` | timestamp         |                                                       |
-
-**Requires a composite index** (equality filter on `userId` + vector index on `embedding`) — see
-[Gotchas](#gotchas-discovered-the-hard-way).
+No longer written or read. Existing documents in this collection (and the Firestore vector index
+created for it) are orphaned and can be deleted; nothing in the app depends on them.
 
 ### `portfolio_holdings` — exact per-account holdings (this app's own collection)
 
@@ -333,13 +342,12 @@ docs here, summed in Java by `PortfolioHoldingsTool`, not derived from prose chu
 | *(doc id)*        | auto-generated |                                                              |
 | `userId`           | string    | indexed                                                          |
 | `filename`          | string    |                                                                   |
-| `documentType`       | string    | `brokerage` / `resume` / `bank_statement` / `other` — metadata only, doesn't change how it's processed |
-| `chunkCount`          | number    |                                                                   |
-| `holdingsCount`         | number    |                                                                   |
+| `holdingsCount`         | number    | holdings extracted from this statement                           |
 | `uploadedAt`             | timestamp |                                                                   |
 
 Exists so a user's uploads can be listed and deleted as a unit (`GET`/`DELETE
-/api/portfolio/documents/...`) without deriving that list from scattered chunk/holding rows.
+/api/portfolio/documents/...`) without deriving that list from scattered holding rows. Documents written before 2026-10-16 may
+also carry `documentType` and `chunkCount`; they are ignored.
 
 ### `market_data_cache` — real stock data, cached across all users (this app's own collection)
 
@@ -356,6 +364,25 @@ Exists so a user's uploads can be listed and deleted as a unit (`GET`/`DELETE
 
 See [Real market data](#real-market-data) for the full design (why Firestore, why a 24h TTL, how
 partial FMP failures are handled).
+
+### `user_preferences` — one preference profile per user (this app's own collection)
+
+Document id = the user id. Field `entries` is a list of maps: `category`, `value`, `status`
+(`ACTIVE`, `REMOVED_BY_USER`, `REMOVED_BY_CONVERSATION`), `source` (`EXTRACTED`, `MANUAL`),
+`firstSeen`, `lastConfirmed`, `evidenceAt` (timestamps), `sessionId`, `evidenceQuote`. Removed entries
+stay in the list. See [Long-term memory](#long-term-memory).
+
+### `episodes` — topic summaries of past conversations (this app's own collection)
+
+Document id = `<sessionId>__<position>`, so regenerating a session overwrites its episodes. Fields:
+`userId`, `sessionId`, `ranges` (list of `{from, to}` message numbers), `startTs`, `endTs`, `title`,
+`summary`, `tickers`, `sectors`, `topics`, `decisions`, `embedding` (a Firestore vector value),
+`createdAt`. Queried by `userId` (and `sessionId`) equality only, so no composite index is needed.
+
+### `memory_extraction_state` — what the memory job has already processed (this app's own collection)
+
+Document id = `<userId>__<sessionId>`: `userId`, `sessionId`, `processedUpdateTime` (the session's
+last-update time when it was processed), `processedAt`.
 
 ### ADK's own collections (managed by `FirestoreSessionService`, not our code)
 
@@ -387,10 +414,10 @@ We don't write to any of this directly — it's entirely managed by
 
 ## Portfolio holdings
 
-Originally a user could upload exactly one portfolio PDF. Now uploads are optional, a user can
-upload any number of documents of any kind (multiple brokerage statements — Vanguard, Fidelity,
-Robinhood, ... — plus non-brokerage documents like a resume or bank statement for extra context),
-and each can be deleted individually. See `PortfolioController`'s `GET`/`DELETE
+Originally a user could upload exactly one portfolio PDF. Now uploads are optional and a user can
+upload any number of **portfolio statements** (Vanguard, Fidelity, Robinhood, ... — one per
+account); other document kinds (a resume, a bank statement) are rejected, and each statement can
+be deleted individually. See `PortfolioController`'s `GET`/`DELETE
 /api/portfolio/documents/...` and the multi-file upload UI in `index.html`.
 
 **The problem this solves — RAG chunk retrieval alone can't answer aggregation questions
@@ -445,11 +472,11 @@ cascade actually removes `portfolio_holdings` rows, not just the metadata record
    `portfolio_vectors`/`portfolio_holdings` directly.** Rejected — Firestore doesn't cheaply do
    "distinct filenames for this user," and deriving delete targets from scattered chunk rows is
    both slower and more error-prone than one purpose-built metadata record per upload.
-5. **Auto-detect `documentType` from content instead of asking the user to pick one at upload.**
-   Rejected for now — `documentType` is currently metadata-only (doesn't change how a document is
-   processed; every type goes through the same chunk+embed+extract pipeline), so auto-detection
-   would add a real LLM call for a value that isn't yet load-bearing anywhere. Worth revisiting if
-   `documentType` ever starts influencing retrieval behavior.
+5. **A user-chosen `documentType` at upload.** *(Superseded.)* This was metadata-only and
+   client-controlled, so it could not enforce anything. Uploads are now statements-only and the
+   check is by outcome: the holdings extraction that already runs must find at least one holding,
+   otherwise the file is rejected (HTTP 422) before anything is stored. No extra LLM call was
+   needed — it reuses the existing extraction.
 
 ### Portfolio allocation (value + weight, not just share count)
 
@@ -614,18 +641,25 @@ per user chat turn in `wealth_agent.agent_audit_log`, created on startup if miss
 `AuditSchemaInitializer` (same "seed what's missing, warn and keep going if unreachable" pattern
 as `DemoUserSeeder`).
 
+> **Data-model decision (2026-10-16):** the wide row per turn is kept as is. It is about 98 KB per turn
+> (14 MB for 143 rows) because every model call stores its full request again; that is accepted at
+> the current volume. The measured numbers, the rejected options, small fixes that stay inside this
+> design and the conditions for revisiting it are in `docs/design/02-analytics-data-model.md`.
+
 **Why BigQuery and not Cloud SQL or just log lines:** serverless (billed per query/storage, not
 per hour like an always-on Cloud SQL instance), the free tier (10GB storage + 1TB queries/month)
 comfortably covers this project's scale, and its native `JSON` column type means the raw
 request/response payloads stay queryable (`JSON_VALUE`, `JSON_QUERY`, ...) instead of being an
 opaque blob.
 
-**How a turn is captured** (`AgentAuditRecorder`, wired onto both agents in `AgentConfig` via
-`.beforeModelCallbackSync(agentAuditRecorder::beforeModel)` /
-`.afterModelCallbackSync(agentAuditRecorder::afterModel)`):
+**How a turn is captured** (`AgentAuditRecorder` implements ADK's `Plugin` interface and is
+registered once on the `App` in `RunnerConfig` via `.plugins(agentAuditRecorder, toolUsageRecorder)` —
+no per-agent wiring, so a new agent is audited automatically). Gotcha: with a `Runner` built from an
+`App`, plugins must be registered on the **`App`** — `Runner.Builder.plugins(...)` throws once an app
+is set:
 
-- `beforeModel` fires immediately before every actual Gemini call, for *either* agent; `afterModel`
-  immediately after. A single user turn is correlated across both agents (and across however many
+- `beforeModelCallback` fires immediately before every actual Gemini call, for *any* agent;
+  `afterModelCallback` immediately after. A single user turn is correlated across both agents (and across however many
   times each agent calls the model) using ADK's own `invocationId` — generated once per incoming
   user message by `Runner` and threaded through every sub-agent in the `SequentialAgent`.
 - One agent can call Gemini more than once per turn: if `portfolio_analysis` decides to call
@@ -644,17 +678,37 @@ opaque blob.
 |---------------------------|-----------|---------------------------------------------------------------|
 | `user_prompt_id`           | string    | ADK's `invocationId` — one per user message                   |
 | `user_id`                  | string    | the authenticated username                                    |
-| `session_id`                | string    | == `user_id` in this app (see [Firestore schema](#firestore-schema)) |
+| `session_id`                | string    | the conversation (ADK session); a user has many (see [Sessions and memory](#sessions-and-memory)) |
 | `user_prompt_text`          | string    | the raw user message                                          |
 | `agent1_name` / `agent2_name` | string  | `portfolio_analysis` / `stock_recommendation`                 |
-| `agent1_llm_calls` / `agent2_llm_calls` | JSON | array of `{requestJson, responseJson, latencyMs, promptTokens, completionTokens}`, one element per real Gemini call that agent made |
+| `agent1_llm_calls` / `agent2_llm_calls` | JSON | array of `{requestJson, responseJson, latencyMs, promptTokens, cachedTokens, completionTokens, thinkingTokens}`, one element per real Gemini call that agent made |
 | `agent1_latency_ms` / `agent2_latency_ms` | int64 | sum of that agent's own call latencies |
-| `agent1_prompt_tokens` / `agent1_completion_tokens` (and `agent2_*`) | int64 | summed across that agent's calls |
+| `agent1_prompt_tokens`, `agent1_cached_tokens`, `agent1_completion_tokens`, `agent1_thinking_tokens` (and `agent2_*`) | int64 | summed across that agent's calls. `cached` is a **subset** of `prompt` (served from Gemini's cache); `thinking` is hidden reasoning, billed like output, **not** part of `completion`. The cached and thinking columns were added 2026-10-16 (NULL on older rows until backfilled) |
 | `input_to_agent2`          | string    | agent 1's output text specifically (not just "whatever text preceded agent 2"), via author-filtered event lookup |
 | `final_response_to_user`    | string    | what `AgentChatService.chat` actually returned                |
 | `total_latency_ms`          | int64     | whole-turn wall-clock time                                     |
 | `status` / `error_message`  | string    | `SUCCESS` or `ERROR` (+ the exception message)                 |
 | `created_at`                | timestamp |                                                                 |
+
+**Token usage views** (`TokenUsageViewInitializer`, SQL in `TokenUsageSql`): `token_usage_by_session`,
+`token_usage_by_user` and `token_usage_by_day` roll the columns above up into `turns`, `prompt_tokens`,
+`cached_tokens`, `completion_tokens`, `thinking_tokens`, `total_tokens` and `cached_share`.
+`total_tokens` = prompt + completion + thinking (cached is not added: it is part of prompt). Without
+the thinking columns, totals understate usage; on real data thinking was about 4x the visible answer.
+Dollar cost is deliberately not modelled for now. New columns reach the live table through in-place
+schema evolution in `AuditSchemaInitializer` (nullable columns are appended; nothing is changed or
+dropped). Rows from before the cached and thinking columns existed can be backfilled once from their
+stored JSON (rows written in the last ~90 minutes sit in BigQuery's streaming buffer and cannot be
+updated yet):
+
+```sql
+UPDATE `PROJECT.wealth_agent.agent_audit_log` t SET
+  agent1_cached_tokens   = (SELECT SUM(IFNULL(SAFE_CAST(JSON_VALUE(c,'$.responseJson.usageMetadata.cachedContentTokenCount') AS INT64),0)) FROM UNNEST(JSON_QUERY_ARRAY(t.agent1_llm_calls)) c),
+  agent1_thinking_tokens = (SELECT SUM(IFNULL(SAFE_CAST(JSON_VALUE(c,'$.responseJson.usageMetadata.thoughtsTokenCount') AS INT64),0))       FROM UNNEST(JSON_QUERY_ARRAY(t.agent1_llm_calls)) c),
+  agent2_cached_tokens   = (SELECT SUM(IFNULL(SAFE_CAST(JSON_VALUE(c,'$.responseJson.usageMetadata.cachedContentTokenCount') AS INT64),0)) FROM UNNEST(JSON_QUERY_ARRAY(t.agent2_llm_calls)) c),
+  agent2_thinking_tokens = (SELECT SUM(IFNULL(SAFE_CAST(JSON_VALUE(c,'$.responseJson.usageMetadata.thoughtsTokenCount') AS INT64),0))       FROM UNNEST(JSON_QUERY_ARRAY(t.agent2_llm_calls)) c)
+WHERE agent1_cached_tokens IS NULL AND created_at < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 2 HOUR);
+```
 
 **Gotcha:** `@JsonRawValue` on `RoundTrip.requestJson`/`responseJson` matters — those fields are
 already-serialized JSON strings (from ADK's own `LlmRequest.toJson()`/`LlmResponse.toJson()`), and
@@ -711,10 +765,11 @@ Deliberately does **not** store which agent(s) own a tool — that's usage data,
 joining `tool_invocations` grouped by `tool_name`/`agent_name`, and storing it redundantly here
 would just be a second copy that could drift from the truth.
 
-**How a call gets captured:** ADK exposes `beforeToolCallbackSync`/`afterToolCallbackSync`/
-`onToolErrorCallbackSync` on `LlmAgent.builder()` — the exact same shape as the model callbacks
-`AgentAuditRecorder` already uses, just one level down (around the actual tool invocation rather
-than the Gemini call that requested it). `ToolContext` (passed to all three) already carries a
+**How a call gets captured:** `ToolUsageRecorder` is also an ADK global `Plugin`, implementing
+`beforeToolCallback`/`afterToolCallback`/`onToolErrorCallback` — the same mechanism
+`AgentAuditRecorder` uses for model calls, one level down (around the actual tool invocation rather
+than the Gemini call that requested it). `RunnerConfigTest` pins that both plugins are registered:
+if they were not, the app would still chat normally but silently stop writing audit rows. `ToolContext` (passed to all three) already carries a
 `functionCallId()` that ADK assigns once per real tool call — `ToolUsageRecorder` reuses that
 directly as `invocation_id` rather than generating a second id that would just duplicate it.
 Rows are buffered per turn (keyed by ADK's `invocationId`, same pattern as `AgentAuditRecorder`)
@@ -842,6 +897,218 @@ chat pipeline.
 test` run — these make real, non-free Gemini/FMP calls and take ~100s for the full suite, not
 milliseconds). Verified stable across two independent full live runs (5/5 both times) — LLM output
 is not literally deterministic, so a single green run isn't itself proof a fix holds.
+
+## Sessions and memory
+
+A user can have many conversations. Memory comes in three layers:
+
+| Layer | What it is | Where | Scope |
+|---|---|---|---|
+| Short-term | One conversation's events + state | `FirestoreSessionService` / `Session` (ADK) | one `(app, userId, sessionId)` |
+| Profile | Durable facts about the user ("no energy stocks", "retire around 2035") | `user_preferences`, added to the prompts | one user, all conversations |
+| Episodes | Topic summaries of past conversations | `episodes`, searched by two agent tools | one user, all conversations |
+
+The profile and episodes are described in [Long-term memory](#long-term-memory). ADK's own
+`MemoryService` / `LoadMemoryTool` (a keyword search over raw events) is **not used any more**: it
+returned unranked, unbounded text, needed a Firestore index that was never created, and the model had
+to remember to call it.
+
+**Multi-session.** `POST /api/chat` takes an optional `sessionId`; omitted means "start a new
+conversation" and the server mints a UUID (title = first message) and returns it. Ownership is
+ADK's own `(app, userId, sessionId)` key: another user's id resolves to nothing, surfaced as a 404
+(`ChatSessionNotFoundException`) rather than get-or-create. One turn at a time per session — a
+second concurrent message gets a 409 (`ChatSessionBusyException`). Sessions created before this
+change used `sessionId == userId`; they still resolve and appear in the list as "Conversation".
+
+**Audit correlation.** `AgentAuditRecorder` / `ToolUsageRecorder` index in-flight turns by
+`TurnKey(userId, sessionId)`, not `userId`. Keyed by user alone, two tabs would overwrite each
+other's invocation id (`AgentAuditRecorderTest` pins this).
+
+**`FirestoreSessionService` 1.7.0 quirks** (read from source, confirmed live):
+- `listSessions` returns every session with *empty* state and events — titles need a `getSession`.
+- A user's own events are stored with `author == userId`, not the literal `"user"`.
+- State scoping looks for `_user_` / `_app_` key prefixes while ADK core uses `user:` / `app:`, and
+  nothing reads the `user-state` collection back into a new session — so cross-session
+  preferences via `user:` state do **not** work with this session service.
+
+**Not in the Java SDK (1.7.0):** Vertex AI Memory Bank (LLM-extracted, consolidated memories) and
+a `PreloadMemoryTool`. Only `VertexAiSessionService` exists, so the extraction of durable facts is
+this app's own code (below).
+
+## Input guardrails
+
+Added 2026-10-17 after a live probe showed the agent prompts alone don't hold the domain boundary:
+code requests, translations, a haiku, and a poem-plus-stock-advice request were all answered. All
+of it lives in `com.wealth.advisor.guardrails`.
+
+**Layers, cheapest first; the first rejection stops the chain (fail fast):**
+
+| Layer | Class | What it does |
+|---|---|---|
+| L1 | `HeuristicInputGuardrail` | Normalizes the text (NFKC, invisible characters removed, lower-cased, punctuation → spaces), then matches a small phrase list ("ignore previous instructions", "show your system prompt", "you are now DAN"). A filter for lazy, high-volume attempts — *not* the injection defense; paraphrases fall through to L2. |
+| L2 | `ScopeClassifierGuardrail` | A small model (`advisor.guardrails.classifier-model`) returns `IN_SCOPE` / `OFF_TOPIC` / `UNSAFE` for the latest message, given the last few accepted messages. Judges meaning, so it catches paraphrases. A plain `genai` call — no tools, no session — a gate in front of the agents, not a stage in the pipeline. Prompt: `prompts/scope_classifier.txt`. |
+| L3 | the agents' own prompts and tools | Unchanged; the last line of defense. |
+| L4 | *not built yet* | Output check on the final reply. |
+
+`GuardrailChain` runs the `InputGuardrail` beans in `@Order`. Any rejection returns the same canned
+`advisor.guardrails.refusal-message`, so the user can't tell which layer fired; the layer and reason
+go to the log (a WARN line). A BigQuery audit row for rejections is not built yet.
+
+**Why the gate is in `AgentChatService.chat`, not an ADK plugin.** Rejected messages must never be
+saved to the session — otherwise they'd sit in history and bias the classifier and the agents on later
+turns. In ADK 1.7.0 `onUserMessageCallback` can only *replace* the message (it can't halt the run), and
+`beforeRunCallback` can halt but fires after the user message is already appended to the session. So the
+check runs before the session is touched; a rejected first message doesn't even create a session (the
+reply carries `sessionId: null`, which the UI already handles).
+
+**Classifier failure fails closed** (`advisor.guardrails.fail-closed: true`): if the classifier call
+errors or returns unparseable output, the message is refused. Set it to `false` to fail open (let the
+message through, with a WARN). `advisor.guardrails.enabled: false` turns the whole chain off.
+
+**Tests.** `HeuristicInputGuardrailTest`, `GuardrailChainTest`, `ScopeClassifierGuardrailTest` (fake
+model) run in the normal suite. `ScopeClassifierEvalTest` (tag `eval`) calls the real classifier on 17
+prompts from the baseline probe plus follow-ups, and skips itself without Gemini credentials.
+Run it with `GOOGLE_GENAI_USE_VERTEXAI=true GOOGLE_CLOUD_PROJECT=… GOOGLE_CLOUD_LOCATION=… ./mvnw -Dtest=ScopeClassifierEvalTest test`.
+
+`GuardrailEvalTest` (tag `eval`) is the end-to-end check, in `PortfolioEvalTest`'s style: real HTTP, the
+real Spring context, real Gemini. It proves a rejection returns the canned refusal *and never touches the
+session* — a rejected first message creates no session, a rejected follow-up is absent from the saved
+history, and the next legitimate message in that session is answered normally — and that in-scope
+questions are not refused. Run it against the **Firestore emulator** so it writes nothing to your real
+database: `gcloud components install cloud-firestore-emulator`, then
+`gcloud emulators firestore start --host-port=localhost:8086`, then run the Maven command above with
+`FIRESTORE_EMULATOR_HOST=localhost:8086` and `-Dtest=GuardrailEvalTest`. BigQuery has no emulator, so
+accepted turns still write audit rows to the real dataset. Each turn takes seconds; the whole class takes a few minutes.
+
+## Long-term memory
+
+Added 2026-10-18. The reasoning behind each choice is in `docs/design/03-user-preferences-memory.md`,
+`04-episodic-memory.md`, `05-memory-implementation-plan.md` (which also keeps the register of what was
+deliberately deferred) and `06-extractor-prompts-draft.md`; an interview-style walk through it is in
+`interview_qa_long_term_memory.md`. The code is in `com.wealth.advisor.memory`.
+
+**Two things are remembered, both learned in the background from finished conversations:**
+
+- a **preference profile**: durable facts the user stated about themselves, in typed slots (excluded
+  sectors from the 11 GICS sectors, excluded industry groups from the 25 GICS groups, excluded tickers,
+  goals and horizon, risk stance, style, and an `other` slot for anything else, such as a theme exclusion
+  like "no tobacco");
+- **episodes**: a short summary, with an embedding, of each topic discussed in a past conversation.
+
+Holdings are deliberately *not* memory: they come from the uploaded statements and the tools compute them
+exactly.
+
+**When it is learned.** The chat page calls `POST /api/memory/refresh` on load (`MemoryController`),
+which returns at once and runs `MemoryExtractionJob` on a background executor. The job lists the user's
+sessions (cheap: no messages loaded) and processes those that have **changed** since the last run (the
+session's last-update time is newer than the one stored in `memory_extraction_state`) and have
+**settled** (no new message for `advisor.extraction.settle-minutes`, 30 by default, so a half-finished
+conversation is not summarised). At most `advisor.extraction.max-sessions-per-run` sessions are done per
+run. For each, the **whole** session is read again and everything derived from it is recomputed: there is
+no bookmark inside a session and no lease, because the writes are idempotent (profile entries are
+upserted by key, episodes have predictable ids). A session that fails is logged and retried on the next
+run. Memory only matters *across* conversations, because within one the full history is already in the
+prompt, so learning a little late costs nothing.
+
+**The preference profile.**
+
+- `PreferenceExtractor` asks a small model (`advisor.profile.extractor-model`) which durable facts the
+  user explicitly stated, as proposed operations (`ADD`, `UPDATE`, `REMOVE`), each with the user's exact
+  quote, the message number and a confidence. It sees only the user's own messages and the current
+  profile, never the assistant's replies or uploaded text. Moods, questions, holdings, hypotheticals and
+  behaviour alone are ignored.
+- `PreferenceReconciler` decides what is applied; the model only proposes. It checks that the quote
+  really appears in that user message, that the value is valid for its category (`PreferenceValues`), and
+  that confidence is at least `advisor.profile.confidence-threshold`. **Newer overrides older by message
+  time, not by processing order**: each entry keeps `evidenceAt`, and an operation is applied only if its
+  message is newer than that, so reprocessing an old conversation after a newer one cannot undo the newer
+  statement. Entries the user typed in (`MANUAL`) are never changed by the extractor.
+- `PreferenceInjector` is a `beforeModelCallback` on **both** agents; it appends the profile (under
+  `advisor.profile.max-words`, exclusions never trimmed) to the system instruction of every model call,
+  labelled as data about the user, not instructions. It is a callback and not part of the agents'
+  instructions because ADK skips `{state}` substitution for an instruction built by a provider (which
+  `stock_recommendation` needs) and a stored text could contain braces. `PreferenceStore` keeps a loaded
+  profile in memory for 15 seconds because the callback runs on every model call.
+- The user sees and edits the profile in the **"What I know about you"** panel (`PreferenceController`,
+  `PreferenceService`, `static/js/preferences.js`). Adding validates exactly like the extractor's output;
+  deleting is a soft delete (`REMOVED_BY_USER`) and counts as evidence at the time of the delete, so an
+  older conversation cannot bring the entry back.
+
+**Episodes.**
+
+- `EpisodeExtractor` asks a small model (`advisor.episodes.extractor-model`) to group the conversation
+  by **topic**. A topic the conversation returned to is one episode with several message ranges. It
+  sees the assistant's replies too, because an episode records what advice was given.
+- `EpisodeValidator` checks and repairs the proposal: ranges are clamped to the messages that exist,
+  never overlap (the earlier episode keeps a contested message), and an episode never spans sessions;
+  tickers and sectors must be valid; there are at most `advisor.episodes.max-per-session`. If the model
+  returned episodes but none survives, one deterministic fallback episode covers the whole conversation.
+- `GenAiEmbedder` embeds each episode's title and summary (`gemini-embedding-001`, 768 dimensions);
+  `EpisodeStore` writes them with predictable ids and removes leftovers of that session.
+- The first agent has two tools. `searchPastConversations(topic, tickers?, window?)` embeds the topic,
+  takes the user's episodes in the window (`past_week`, `past_month`, `past_3_months`, `past_year`,
+  `any` = the last `advisor.episodes.default-window-days`; code turns the word into a start time, the
+  model never does date arithmetic) and ranks them in `EpisodeRanker` with a **hybrid score**:
+  `similarity-weight x similarity + entity-weight x ticker match + recency-weight x recency`. Cosine
+  similarity is rescaled between `similarity-floor` and `similarity-ceiling` because embedding models
+  score unrelated text well above zero, and an episode is only returned if its relevance (the score
+  without recency) reaches `min-score`, so being recent never rescues an unrelated episode.
+  `getEpisodeDetails(episodeId)` loads the original messages of one episode, only if it belongs to the
+  caller, capped at `advisor.episodes.details-max-chars`. Both tools report any failure as "nothing found"
+  and never throw.
+- The similarity search runs in the app over the user's own episodes (hundreds at most), behind
+  `EpisodeSearch`, so it needs no vector index; the vector is stored as a Firestore vector value so an
+  index could be added later without a migration (deferred, `docs/design/05` D18/D19).
+- Deleting a conversation also deletes its episodes and its processing record (`SessionMemoryCleanup`);
+  the profile is kept because it describes the user, not one conversation.
+
+**Keeping model calls repeatable.** The scope classifier and both extractors run at temperature 0 with a
+JSON response schema; a classifier that is only mostly consistent once wrongly refused an ordinary
+preference statement.
+
+**Tests.**
+
+| Test | What it covers | Needs |
+|---|---|---|
+| `VocabularyTest`, `PreferenceProfileTest`, `PreferenceReconcilerTest`, `PreferenceServiceTest`, `PreferenceControllerTest`, `PreferenceInjectorTest`, `PreferenceExtractorTest`, `MemoryExtractionJobTest`, `PromptTemplateTest`, `Episode*Test`, `SearchWindowTest`, `ToolDeclarationsTest` | the rules, with fakes | nothing |
+| `MemoryStoresEmulatorTest` (tag `eval`) | the Firestore stores: transactions, mapping, vectors, isolation | Firestore emulator |
+| `PreferenceExtractorEvalTest`, `EpisodeExtractorEvalTest`, `EpisodeRetrievalEvalTest` (tag `eval`) | the real models: durable vs transient, reversals, interleaved topics, paraphrase retrieval | Gemini credentials |
+| `PreferenceInjectionEvalTest`, `MemoryEndToEndEvalTest` (tag `eval`) | the whole app: a preference stated in a chat is learned, shown, used in a new chat and deletable | emulator + credentials |
+
+Run the evals against the **Firestore emulator**, never the real project:
+`gcloud components install cloud-firestore-emulator`, then `gcloud emulators firestore start
+--host-port=localhost:8086`, then `FIRESTORE_EMULATOR_HOST=localhost:8086 GOOGLE_GENAI_USE_VERTEXAI=true
+GOOGLE_CLOUD_PROJECT=<project> GOOGLE_CLOUD_LOCATION=us-central1 ./mvnw -Dtest=<TestName> test`. BigQuery has
+no emulator, so accepted chat turns in those tests still write audit rows to the real dataset.
+
+## Logging and traceability
+
+Every log line carries `[requestId userId sessionId]` (Spring Boot's `logging.pattern.correlation`,
+set in `application.yml`). The values come from SLF4J's MDC, which is per thread, and a chat turn hops
+threads (request thread, then ADK's gRPC executor threads, then virtual threads for the allocation
+tool's parallel price lookups). So the context is opened where the work happens and **restored on
+exit** by `logging/LogContext`: the request interceptor sets request id, user and Cloud Trace id,
+`AgentChatService` adds the session for the turn, and each tool opens its own scope from its
+`ToolContext`. It is deliberately **not** set from ADK plugin callbacks: a value left behind on a
+pooled thread would attribute one user's activity to another.
+
+**On Cloud Run, logs are JSON.** With the `cloud` profile (`SPRING_PROFILES_ACTIVE=cloud`) each line is
+one JSON object from `logging/GoogleCloudLogFormatter` — `severity`, `timestamp`, `message`, `logger`,
+`thread`, plus `userId`, `sessionId`, `requestId` (and `invocationId`, `agent` inside tools) as fields,
+and `logging.googleapis.com/trace` so Cloud Logging groups the app's lines under the platform's request
+log. A custom formatter is needed because Spring Boot's built-in JSON formats name the level `level` /
+`log.level`, but Cloud Logging only reads `severity`. Useful Logs Explorer queries:
+
+```
+resource.type="cloud_run_revision" AND jsonPayload.userId="demo"
+jsonPayload.sessionId="<session id>"
+jsonPayload.requestId="<request id>"
+severity>=WARNING AND jsonPayload.userId="demo"
+jsonPayload.invocationId="<turn id>"        # tool lines; the same id is agent_audit_log.user_prompt_id
+```
+
+ADK-internal and Firestore library lines cannot carry the context. The rationale, the rejected
+options and the queries are in `docs/design/01-log-traceability.md`.
 
 ## Environment variables
 
@@ -1008,7 +1275,7 @@ gcloud run deploy wealth-advisor \
   --region=us-central1 \
   --service-account=wealth-advisor-run@<PROJECT_ID>.iam.gserviceaccount.com \
   --allow-unauthenticated \
-  --set-env-vars=GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=<PROJECT_ID>,GOOGLE_CLOUD_LOCATION=us-central1,GCP_PROJECT_ID=<PROJECT_ID> \
+  --set-env-vars=GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=<PROJECT_ID>,GOOGLE_CLOUD_LOCATION=us-central1,GCP_PROJECT_ID=<PROJECT_ID>,SPRING_PROFILES_ACTIVE=cloud \
   --set-secrets=FMP_API_KEY=fmp-api-key:latest \
   --memory=1Gi \
   --cpu=1
@@ -1020,6 +1287,11 @@ entirely — without this flag, Cloud Run rejects anonymous requests before they
 Security, so nobody could even load `/login.html`. This app's real authentication is
 `SecurityConfig`'s form login (see [End-to-end request flows](#end-to-end-request-flows)) — Cloud
 Run's own layer should stay open so that logic is the only gate a user actually hits.
+
+**`SPRING_PROFILES_ACTIVE=cloud`** turns on the Cloud Logging JSON log format (`application-cloud.yml`,
+see [Logging and traceability](#logging-and-traceability)). Without it the service still works, but
+logs are plain text, so they cannot be filtered by user or session and `severity` is not set. It
+applies from the next deploy; the already-deployed revision keeps the text format.
 
 `us-central1` matches `GOOGLE_CLOUD_LOCATION` deliberately — keeps Cloud Run and the Vertex AI
 calls it makes in the same region, not required but avoids unnecessary cross-region latency.
@@ -1117,6 +1389,28 @@ These aren't documented anywhere obvious — found by actually running the app, 
    never-ask-just-fetch instruction) and how `PortfolioEvalTest` catches it via a trajectory
    assertion.
 
+9. **A provider-built ADK instruction skips `{state}` substitution, and a global instruction only
+   applies when the root agent is an `LlmAgent`.** Ours is a `SequentialAgent` whose second agent needs
+   `{portfolio_analysis}` filled in, so the preference profile is added with a `beforeModelCallback`
+   instead (`PreferenceInjector`).
+10. **ADK's `onUserMessageCallback` can only replace the user message, and `beforeRunCallback` fires
+   after the message is saved to the session.** Neither can reject a message without leaving it in the
+   history, which is why the input guardrails run at the top of `AgentChatService.chat`.
+11. **Circular dependency: runner, agents, tools.** The `Runner` depends on the agents, so a tool that
+   reads sessions must not depend on the `Runner`. `AdkSessionSource` uses the `BaseSessionService` bean
+   and `AgentConfig.PIPELINE_NAME` instead. No unit test sees this; the app just fails to start.
+12. **Embedding models score unrelated text high.** `gemini-embedding-001` gave 0.43 to 0.54 for
+   completely unrelated queries and 0.64 to 0.73 for good matches, so a raw cosine threshold of 0.25 kept
+   everything. Similarity is rescaled between a floor and a ceiling and relevance is gated before recency
+   counts. Recalibrate with `EpisodeRetrievalEvalTest` if the embedding model changes.
+13. **A model at default temperature is only mostly consistent.** The scope classifier once refused a
+   plain preference statement it had accepted a minute earlier. Classifiers and extractors run at
+   temperature 0.
+14. **Optional fields in a response schema are often left out.** The episode extractor skipped
+   `decisions` until every list field was made required (they may still be empty).
+15. **`mvn test` runs the `eval`-tagged tests too** (nothing in the pom excludes them), and those that
+   start the Spring context fail without Gemini credentials. Use `-DexcludedGroups=eval` for the fast suite.
+
 ## Milestone status
 
 1. ✅ Single agent + one tool + `/api/chat`, in-memory sessions.
@@ -1138,10 +1432,10 @@ These aren't documented anywhere obvious — found by actually running the app, 
    24h Firestore cache shared across every user. The one non-ADC credential in this app
    (`FMP_API_KEY`); log-forging guardrails (`com.wealth.advisor.guardrails.ContentSanitizer`)
    added alongside it.
-8. ✅ Optional, multi-file, multi-type portfolio uploads + exact holdings aggregation (see
+8. ✅ Optional, multi-file portfolio-statement uploads + exact holdings aggregation (see
    [Portfolio holdings](#portfolio-holdings)) — upload is no longer required or limited to one
-   file; any number of brokerage statements, resumes, or bank statements can be uploaded and
-   individually deleted. `HoldingsExtractionService` + `portfolio_holdings` +
+   file; any number of brokerage statements can be uploaded and individually deleted (resumes and
+   bank statements are rejected). `HoldingsExtractionService` + `portfolio_holdings` +
    `PortfolioHoldingsTool.getPortfolioHoldings` solve exact cross-account aggregation (e.g. total
    GOOG shares across 3 brokerages) in a way chunk-based RAG retrieval structurally can't
    guarantee. Per-user isolation is unchanged — every new collection/query still scopes by
@@ -1162,3 +1456,10 @@ These aren't documented anywhere obvious — found by actually running the app, 
 11. ⏳ Cloud Run deployment — not started. Runbook written in [GCP deployment (Cloud
     Run)](#gcp-deployment-cloud-run) ahead of actually doing it, including one still-outstanding
     code prerequisite (`server.port`) called out there.
+12. ✅ Input guardrails (see [Input guardrails](#input-guardrails)) — a fail-fast chain in front of the
+    agents (phrase filter, then a small scope classifier that fails closed); a rejected message is never
+    saved. Verified by `ScopeClassifierEvalTest` and `GuardrailEvalTest`.
+13. ✅ Long-term memory (see [Long-term memory](#long-term-memory)) — a preference profile and episodic
+    memory learned in the background, injected into the agents / searched by tools, with a panel to see
+    and edit the profile. Replaces the keyword-search `loadMemory`. Verified end to end by
+    `MemoryEndToEndEvalTest`.

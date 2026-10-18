@@ -1,12 +1,14 @@
 package com.wealth.advisor.portfolio;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.genai.Client;
 import com.google.genai.types.GenerateContentConfig;
-import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
+import com.wealth.advisor.agent.prompt.PromptLoader;
+import com.wealth.advisor.config.AdvisorProperties;
 import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
@@ -14,70 +16,67 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * Extracts individual stock/ETF holdings out of a brokerage statement's text, as structured data
- * — not prose chunks — so exact aggregation ("total GOOG shares across every account") can be a
- * real Firestore query summed in Java, rather than hoping RAG's top-K vector search happens to
- * retrieve every chunk that mentions a given ticker. See {@code ARCHITECTURE.md}'s "Portfolio
- * holdings" section for why chunk-based RAG alone isn't reliable for aggregation questions.
+ * Reads the individual stock/ETF holdings out of a statement's text as structured data.
  *
- * <p>Uses the same plain {@code genai} {@link Client} as {@link EmbeddingService} (not ADK's
- * agent framework — this runs once at ingestion time, not as something the chat agent calls), but
- * a structured-output {@code generateContent} call instead of an embedding call: {@code
- * responseMimeType("application/json")} + a {@code responseSchema} constrains Gemini to return a
- * JSON array matching exactly the shape this app needs, rather than free-form text that would
- * need fragile regex/prose parsing.
+ * <p>This is a plain structured-output Gemini call, run once at upload time (not something the chat
+ * agent calls): {@code responseMimeType("application/json")} plus a {@code responseSchema}
+ * constrains the model to a JSON array of exactly the shape {@link Holding} needs, so there is no
+ * fragile prose parsing.
+ *
+ * <p>This step decides whether an upload is accepted at all, so it must not hide failures: a model
+ * or parsing error throws {@link IllegalStateException}. Returning an empty list is reserved for
+ * "the model read the document and found no holdings".
  */
 @Component
 public class HoldingsExtractionService {
 
 	private static final Logger log = LoggerFactory.getLogger(HoldingsExtractionService.class);
-	private static final String MODEL = "gemini-2.5-flash";
 
 	private final Client genAiClient;
-	private final ObjectMapper objectMapper = new ObjectMapper();
+	private final String model;
+	private final ObjectMapper objectMapper;
+	private final String instruction;
 
-	public HoldingsExtractionService(Client genAiClient) {
+	public HoldingsExtractionService(
+			Client genAiClient, AdvisorProperties properties, ObjectMapper objectMapper, PromptLoader promptLoader) {
 		this.genAiClient = genAiClient;
+		this.model = properties.model().extraction();
+		this.objectMapper = objectMapper;
+		this.instruction = promptLoader.load("holdings_extraction").text();
 	}
 
 	/**
-	 * @param documentText the full extracted text of an uploaded document
-	 * @return one map per holding found ({@code ticker}, {@code shares}, {@code costBasis}
-	 *     (nullable), {@code account} (nullable)) — an empty list for documents with no holdings
-	 *     (a resume, a bank statement) rather than an error, since not every uploaded document is
-	 *     expected to contain any
+	 * @return the usable holdings found; empty if the document contains none
+	 * @throws IllegalStateException if the model call fails or returns something unparseable
 	 */
-	public List<Map<String, Object>> extract(String documentText) {
+	public List<Holding> extract(String documentText) {
+		return parse(generate(documentText));
+	}
+
+	private String generate(String documentText) {
 		try {
-			GenerateContentConfig config =
-					GenerateContentConfig.builder()
-							.responseMimeType("application/json")
-							.responseSchema(responseSchema())
-							.build();
-
-			String prompt =
-					"""
-					Extract every individual stock or ETF holding mentioned in the following document.
-					For each holding found, report its ticker symbol, the number of shares held, its cost
-					basis per share if the document states one, and the brokerage/account name if the
-					document states one. If this document contains no stock/ETF holdings at all (e.g. it's
-					a resume or a bank statement), return an empty array — do not invent holdings.
-
-					Document text:
-					"""
-							+ documentText;
-
-			GenerateContentResponse response = genAiClient.models.generateContent(MODEL, prompt, config);
-			List<Map<String, Object>> holdings =
-					objectMapper.readValue(response.text(), new TypeReference<>() {});
-			log.debug("Extracted {} holding(s) from document text", holdings.size());
-			return holdings;
-		} catch (Exception e) {
-			// Extraction is a best-effort enrichment on top of the RAG chunks, which are already
-			// stored regardless — a failure here shouldn't fail the whole upload.
-			log.warn("Holdings extraction failed, continuing without structured holdings: {}", e.getMessage());
-			return List.of();
+			return genAiClient.models.generateContent(model, instruction + documentText, config()).text();
+		} catch (RuntimeException e) {
+			throw new IllegalStateException("Holdings extraction call failed", e);
 		}
+	}
+
+	List<Holding> parse(String json) {
+		try {
+			List<Holding> all = objectMapper.readValue(json, new TypeReference<>() {});
+			List<Holding> usable = all.stream().filter(Holding::isUsable).toList();
+			log.debug("Extracted {} usable holding(s) ({} returned)", usable.size(), all.size());
+			return usable;
+		} catch (JsonProcessingException | IllegalArgumentException e) {
+			throw new IllegalStateException("Holdings extraction returned unparseable output", e);
+		}
+	}
+
+	private static GenerateContentConfig config() {
+		return GenerateContentConfig.builder()
+				.responseMimeType("application/json")
+				.responseSchema(responseSchema())
+				.build();
 	}
 
 	private static Schema responseSchema() {
@@ -88,22 +87,16 @@ public class HoldingsExtractionService {
 								.type(Type.Known.OBJECT)
 								.properties(
 										Map.of(
-												"ticker",
-												Schema.builder().type(Type.Known.STRING).description("Stock ticker symbol").build(),
-												"shares",
-												Schema.builder().type(Type.Known.NUMBER).description("Number of shares held").build(),
-												"costBasis",
-												Schema.builder()
-														.type(Type.Known.NUMBER)
-														.description("Cost basis per share, if stated in the document")
-														.build(),
-												"account",
-												Schema.builder()
-														.type(Type.Known.STRING)
-														.description("Brokerage or account name, if stated in the document")
-														.build()))
+												"ticker", field(Type.Known.STRING, "Stock ticker symbol"),
+												"shares", field(Type.Known.NUMBER, "Number of shares held"),
+												"costBasis", field(Type.Known.NUMBER, "Cost basis per share, if stated in the document"),
+												"account", field(Type.Known.STRING, "Brokerage or account name, if stated in the document")))
 								.required("ticker", "shares")
 								.build())
 				.build();
+	}
+
+	private static Schema field(Type.Known type, String description) {
+		return Schema.builder().type(type).description(description).build();
 	}
 }

@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Round-trip check: generate a fixture's PDF bytes, then parse them back with the exact same
- * {@link PDFTextStripper} {@code PortfolioIngestionService} uses on real uploads. This is the
+ * {@link PDFTextStripper} {@code PdfTextReader} uses on real uploads. This is the
  * assertion that actually matters — it's not enough that {@link PdfFixtures} produces well-formed
  * PDF bytes in the abstract, it has to produce bytes the *real production parsing code* correctly
  * reads back the intended content from, since that's the exact path every eval case exercises.

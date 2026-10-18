@@ -1,5 +1,6 @@
 package com.wealth.advisor.web;
 
+import com.wealth.advisor.config.AdvisorProperties;
 import java.time.Duration;
 import java.util.Deque;
 import java.util.Map;
@@ -24,7 +25,7 @@ import org.springframework.stereotype.Component;
  * with a Firestore- or Redis-backed counter only if this app is ever scaled past a couple of
  * concurrent instances — not worth the complexity before then.
  *
- * <p>{@code MAX_REQUESTS_PER_WINDOW} is generous relative to how fast a real user can even
+ * <p>{@code advisor.chat.max-requests-per-minute} is generous relative to how fast a real user can even
  * generate turns: a chat turn already takes ~7-10s (two Gemini calls, per {@code
  * ARCHITECTURE.md}), so a human waiting for replies tops out well under this limit — it's aimed at
  * a scripted/careless burst, not a real conversation.
@@ -32,12 +33,16 @@ import org.springframework.stereotype.Component;
 @Component
 public class ChatRateLimiter {
 
-  // Package-private (not private) so ChatRateLimiterTest can assert against the real limit
-  // instead of duplicating it as a magic number that could silently drift out of sync.
-  static final int MAX_REQUESTS_PER_WINDOW = 20;
   private static final Duration WINDOW = Duration.ofMinutes(1);
 
+  private final int maxRequestsPerWindow;
+
   private final Map<String, Deque<Long>> requestTimestampsByUser = new ConcurrentHashMap<>();
+
+  /** The limit comes from {@code advisor.chat.max-requests-per-minute} (the window is one minute). */
+  public ChatRateLimiter(AdvisorProperties properties) {
+    this.maxRequestsPerWindow = properties.chat().maxRequestsPerMinute();
+  }
 
   /**
    * Records one request attempt for {@code userId} and returns whether it's allowed. Thread-safe
@@ -52,7 +57,7 @@ public class ChatRateLimiter {
       while (!timestamps.isEmpty() && timestamps.peekFirst() < windowStart) {
         timestamps.pollFirst();
       }
-      if (timestamps.size() >= MAX_REQUESTS_PER_WINDOW) {
+      if (timestamps.size() >= maxRequestsPerWindow) {
         return false;
       }
       timestamps.addLast(now);
