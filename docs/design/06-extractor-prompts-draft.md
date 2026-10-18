@@ -141,8 +141,9 @@ ranges; embeds title plus summary; writes with predictable IDs.
 - **Profile:** loaded by code and injected into both agents' instructions on every turn, wrapped as data.
 - **Episodes:** the first agent has two tools and an instruction line telling it to use them when the user
   refers to an earlier conversation. Draft tool descriptions:
-  - `searchPastConversations(topic, window)`: "Find earlier conversations with this user about a topic.
-    `window` is one of this_week, last_week, last_month, last_3_months, any. Returns short summaries with
+  - `searchPastConversations(topic, tickers?, window?)`: "Find earlier conversations with this user about a topic.
+    `tickers` are symbols mentioned, if any. `window` is one of past_week, past_month, past_3_months,
+    past_year, any (any means the last 12 months). Returns short summaries with
     dates." The user id comes from the session, never from an argument.
   - `getEpisodeDetails(episodeId)`: "Load the original messages of one episode returned by the search.
     Use only when the summary is not enough."

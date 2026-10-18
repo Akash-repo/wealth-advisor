@@ -50,7 +50,7 @@ Flow:
 | 13 | An episode = a topic with a list of message ranges inside one session; ranges never overlap; episodes never span sessions | People return to topics; the session is the user-chosen boundary |
 | 14 | One embedding per episode (title plus summary); no chunking | The summary is short; "chunking" is done by episode boundaries |
 | 15 | Episodes live in their own collection with predictable IDs (session ID plus position) | One session yields many episodes; ADK owns the session documents; vector index is per collection |
-| 16 | Retrieval: filter by user and time window (an enum converted to dates by code), then a hybrid score `0.6 × similarity + 0.3 × entity match + 0.1 × recency` computed in code over the nearest candidates | Exact tickers plus fuzzy meaning plus a recency tie-break; weights tunable |
+| 16 | Retrieval: filter by user and time window (a rolling enum converted to a start time by code; `any` = last 12 months), then a hybrid score `0.6 × similarity + 0.3 × entity match + 0.1 × recency` computed in code over the nearest candidates | Exact tickers plus fuzzy meaning plus a recency tie-break; weights tunable |
 | 17 | Bad model output falls back to one episode for the whole session | Quality may drop, the store cannot be corrupted |
 | 18 | Whether profile operations and episodes come from one model call or two | **Open**; lean toward two separate calls first (easier to test each) |
 
@@ -137,6 +137,14 @@ remembering deletions, consolidation of a topic across sessions, retention rules
 - [ ] Technical verification in section 6 (read-only checks I can run during the discussion)
 - [ ] One combined lifecycle diagram, and the interview Q&A file for the memory question
 
+## 5b. Defaults chosen at build time (2026-10-18; tune with evals)
+
+Extractor model `gemini-2.5-flash-lite` for both extractors; at most 8 episodes per session; summaries 80 to 150
+words; two separate extraction calls (decision 18); confidence threshold 0.6 (below it an operation is not
+applied); recency half-life 30 days; minimum search score 0.25; up to 10 sessions processed per run; search
+returns at most 5 episodes; profile cap about 500 words; episode details capped at about 6,000 characters;
+embedding model chosen after the check in section 6 (default candidate `gemini-embedding-001`).
+
 ## 6. Verify before coding
 
 1. **Firestore vector search from the Java client** (3.44.0 includes `VectorQuery`) with pre-filters on
@@ -188,6 +196,8 @@ something is deferred**, in the same pass as the decision.
 | D15 | Inferring preferences from behaviour (repeated questions, repeated requests) and the contradiction counter and conflict confirm-back it would need | Riskier second feature; only explicit statements act for now | Users say the system should have noticed a pattern | doc 03, 4.4 |
 | D16 | Staleness handling: a `lastConfirmed` age shown in the injected profile, a 12-month flag for risk stance, style and other, and the agent asking the user to re-confirm | The owner wants it as an enhancement | Users complain about outdated entries influencing advice | doc 03 |
 | D17 | Theme/ESG exclusions (tobacco, weapons, fossil fuels) as a first-class category, and the third GICS level (74 industries); today they live in `other` as free text and cannot be enforced by code | The GICS two-level vocabulary does not model them; needs a curated list | Users commonly state theme exclusions, or code-side enforcement (D2) is built | doc 03, 6a; doc 06 |
+| D18 | Narrowing episode search by ticker first (`array-contains-any` on the episode's tickers, with a fallback to the wider scan when few results) and the composite index it needs | Brute force over a user's episodes is enough to start; the index needs approval | Searches get slow | doc 04, 3.7 |
+| D19 | Moving episode similarity search to a Firestore vector index; caching a user's vectors in memory | Hundreds of episodes per user are fine in the app | More than about 1,000 episodes per user, or slow searches | doc 04, 3.7 |
 | D14 | Fate of `loadMemory` / `GuardedMemoryService` once episodes exist, and creating the Firestore composite index it needs | Depends on episodic design; index is an infrastructure change that needs approval | Stage 4 | doc 04, section 5 |
 
 ## 8. Housekeeping when it is built

@@ -64,9 +64,12 @@ pointer to raw events already supports "find the episode, then drill down".
 
 ### 3.5 Retrieval
 
-1. The model calls a tool such as `searchPastConversations(topic, window)`. `window` is an **enum**
-   (`this_week`, `last_week`, `last_month`, `last_3_months`, `any`); the model never does date arithmetic and
-   **code** converts the enum to real dates.
+1. The model calls `searchPastConversations(topic, tickers?, window?)`. `window` is a **rolling enum**
+   (`past_week`, `past_month`, `past_3_months`, `past_year`, `any`); calendar weeks were rejected as ambiguous
+   ("last week" maps to `past_week`, slightly over-inclusive, which is safe because the score ranks). The model
+   never does date arithmetic and **code** converts the enum to a start time. `any` is bounded to the last 12
+   months. `tickers` is optional: symbols the model extracted from the user's words, used for the entity-match
+   part of the score.
 2. Filter by `userId` and the date range. This is a filter, not a score.
 3. Take the nearest candidates by embedding similarity (the query is embedded with the same model used at
    write time), then rerank in application code with a **hybrid score**:
@@ -105,6 +108,14 @@ LangMem uses "episodic" to mean stored experiences (situation, reasoning, outcom
 Zep (temporal knowledge graph) and Vertex AI Memory Bank extract memories in the background, usually with
 embeddings. Common practices: retrieve episodes rather than raw messages, filter on metadata before similarity
 search, keep raw history as the source of truth, write by background extraction.
+
+### 3.7 Where the similarity search runs (decided 2026-10-18)
+
+**Brute force in the app first**: read the user's episodes in the window and compute cosine similarity in Java,
+behind a small `EpisodeStore.search(...)` interface so it can be swapped. A user has hundreds of episodes, so
+this is enough, needs no vector index, and works on the Firestore emulator. Narrowing by ticker first (an
+`array-contains-any` query with a two-step fallback to the wider scan) and moving to a Firestore vector index
+are deferred (D18, D19 in doc 05).
 
 ## 5. Open points
 
