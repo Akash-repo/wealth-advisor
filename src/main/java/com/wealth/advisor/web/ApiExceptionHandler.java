@@ -1,5 +1,6 @@
 package com.wealth.advisor.web;
 
+import com.wealth.advisor.memory.PreferenceService;
 import com.wealth.advisor.portfolio.InvalidPortfolioDocumentException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
@@ -18,6 +19,20 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  */
 @RestControllerAdvice
 public class ApiExceptionHandler {
+
+	@ExceptionHandler(PreferenceService.InvalidPreferenceException.class)
+	ProblemDetail invalidPreference(PreferenceService.InvalidPreferenceException e) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, e.getMessage());
+		problem.setTitle("Invalid preference");
+		return problem;
+	}
+
+	@ExceptionHandler(PreferenceService.PreferenceNotFoundException.class)
+	ProblemDetail preferenceNotFound(PreferenceService.PreferenceNotFoundException e) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, e.getMessage());
+		problem.setTitle("Preference not found");
+		return problem;
+	}
 
 	@ExceptionHandler(InvalidPortfolioDocumentException.class)
 	ProblemDetail invalidPortfolioDocument(InvalidPortfolioDocumentException e) {

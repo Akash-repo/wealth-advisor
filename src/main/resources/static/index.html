@@ -42,6 +42,29 @@
 		<ul id="documents-list" class="list-group list-group-flush"></ul>
 	</div>
 
+	<div class="card mb-3">
+		<div class="card-body">
+			<h6 class="card-subtitle mb-2 text-muted">What I know about you</h6>
+			<div class="form-text">Learned from your conversations. Delete anything that is wrong, or add your own.</div>
+		</div>
+		<ul id="preferences-list" class="list-group list-group-flush"></ul>
+		<div class="card-body border-top">
+			<form id="preference-form" class="row g-2 align-items-center">
+				<div class="col-12 col-sm-4">
+					<select id="preference-category" class="form-select form-select-sm" aria-label="Kind of preference"></select>
+				</div>
+				<div class="col-12 col-sm">
+					<select id="preference-value-select" class="form-select form-select-sm d-none" aria-label="Value"></select>
+					<input id="preference-value-text" type="text" class="form-control form-control-sm" maxlength="200" aria-label="Value">
+				</div>
+				<div class="col-auto">
+					<button type="submit" class="btn btn-sm btn-primary">Add</button>
+				</div>
+			</form>
+			<div id="preference-status" class="form-text mt-1"></div>
+		</div>
+	</div>
+
 	<div class="input-group input-group-sm mb-2">
 		<label class="input-group-text" for="session-select">Conversation</label>
 		<select id="session-select" class="form-select"></select>
@@ -60,5 +83,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js" integrity="sha384-FKyoEForCGlyvwx9Hj09JcYn3nv7wiPVlz7YYwJrWVcXK/BmnVDxM+D2scQbITxI" crossorigin="anonymous"></script>
 <script src="/js/chat.js"></script>
+<script src="/js/preferences.js"></script>
 </body>
 </html>

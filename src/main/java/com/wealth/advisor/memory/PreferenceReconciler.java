@@ -9,7 +9,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import org.springframework.stereotype.Component;
 
@@ -35,9 +34,6 @@ import org.springframework.stereotype.Component;
 @Component
 public class PreferenceReconciler {
 
-	private static final Pattern TICKER = Pattern.compile("[A-Z][A-Z0-9.\\-]{0,9}");
-	private static final Pattern WHITESPACE_OR_CONTROL = Pattern.compile("[\\s\\p{Cntrl}]+");
-	private static final int MAX_VALUE_LENGTH = 200;
 	private static final int MIN_QUOTE_LENGTH = 4;
 
 	public record Result(PreferenceProfile profile, int applied, List<String> dropped) {}
@@ -99,7 +95,7 @@ public class PreferenceReconciler {
 		if (!quoteAppears(op.evidenceQuote(), message.text())) {
 			return Step.dropped(profile, "evidence quote not found in the message");
 		}
-		Optional<String> value = normalizedValue(op.category(), op.value());
+		Optional<String> value = PreferenceValues.normalize(op.category(), op.value());
 		if (value.isEmpty()) {
 			return Step.dropped(profile, "invalid value for the category");
 		}
@@ -144,7 +140,7 @@ public class PreferenceReconciler {
 
 	private Step update(PreferenceProfile profile, PreferenceOperation op, String value, TimedMessage message, String quote, String sessionId) {
 		PreferenceProfile current = profile;
-		Optional<String> replaced = Optional.ofNullable(op.replaces()).flatMap(r -> normalizedValue(op.category(), r));
+		Optional<String> replaced = Optional.ofNullable(op.replaces()).flatMap(r -> PreferenceValues.normalize(op.category(), r));
 		if (replaced.isPresent() && current.find(op.category(), replaced.get()).filter(PreferenceEntry::isActive).isPresent()) {
 			Step removal = remove(current, op.category(), replaced.get(), message);
 			if (removal.isDropped()) {
@@ -155,29 +151,12 @@ public class PreferenceReconciler {
 		return add(current, op.category(), value, message, quote, sessionId);
 	}
 
-	/** The value in its stored form, or empty if it is not valid for the category. */
-	static Optional<String> normalizedValue(PreferenceCategory category, String raw) {
-		if (raw == null || raw.isBlank()) {
-			return Optional.empty();
-		}
-		return switch (category) {
-			case EXCLUDED_SECTORS -> Sector.fromLabel(raw).map(Sector::label);
-			case EXCLUDED_INDUSTRY_GROUPS -> IndustryGroup.fromLabel(raw).map(IndustryGroup::label);
-			case EXCLUDED_TICKERS -> Optional.of(raw.strip().toUpperCase(Locale.ROOT)).filter(t -> TICKER.matcher(t).matches());
-			default -> Optional.of(singleLine(raw)).filter(t -> !t.isEmpty() && t.length() <= MAX_VALUE_LENGTH);
-		};
-	}
-
 	private static boolean quoteAppears(String quote, String messageText) {
 		if (quote == null) {
 			return false;
 		}
-		String wanted = singleLine(quote).toLowerCase(Locale.ROOT);
-		return wanted.length() >= MIN_QUOTE_LENGTH && singleLine(messageText).toLowerCase(Locale.ROOT).contains(wanted);
-	}
-
-	private static String singleLine(String text) {
-		return WHITESPACE_OR_CONTROL.matcher(text).replaceAll(" ").strip();
+		String wanted = PreferenceValues.singleLine(quote).toLowerCase(Locale.ROOT);
+		return wanted.length() >= MIN_QUOTE_LENGTH && PreferenceValues.singleLine(messageText).toLowerCase(Locale.ROOT).contains(wanted);
 	}
 
 	private static String describe(PreferenceOperation op) {

@@ -1,6 +1,7 @@
 package com.wealth.advisor.config;
 
 import com.google.adk.agents.LlmAgent;
+import com.wealth.advisor.memory.PreferenceInjector;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.LoadMemoryTool;
@@ -41,6 +42,7 @@ public class AgentConfig {
 			PortfolioHoldingsTool portfolioHoldingsTool,
 			PortfolioAllocationTool portfolioAllocationTool,
 			StockLookupTool stockLookupTool,
+			PreferenceInjector preferenceInjector,
 			AdvisorProperties properties,
 			PromptLoader promptLoader) {
 		return LlmAgent.builder()
@@ -58,6 +60,7 @@ public class AgentConfig {
 						// sessions, backed by the FirestoreMemoryService wired into the Runner below.
 						new LoadMemoryTool())
 				.outputKey("portfolio_analysis")
+				.beforeModelCallbackSync(preferenceInjector)
 				.build();
 	}
 
@@ -67,6 +70,7 @@ public class AgentConfig {
 	 */
 	@Bean
 	public LlmAgent stockRecommendationAgent(
+			PreferenceInjector preferenceInjector,
 			AdvisorProperties properties,
 			PromptLoader promptLoader) {
 		return LlmAgent.builder()
@@ -74,6 +78,7 @@ public class AgentConfig {
 				.description("Turns a portfolio analysis into a balanced recommendation with risk warnings.")
 				.model(properties.model().chat())
 				.instruction(promptLoader.load("stock_recommendation").text())
+				.beforeModelCallbackSync(preferenceInjector)
 				.build();
 	}
 

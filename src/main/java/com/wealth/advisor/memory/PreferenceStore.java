@@ -7,29 +7,48 @@ import com.google.cloud.firestore.Firestore;
 import com.wealth.advisor.constants.FirestoreCollections;
 import com.wealth.advisor.constants.FirestoreFields;
 import com.wealth.advisor.util.FirestoreFutures;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.UnaryOperator;
 import org.springframework.stereotype.Component;
 
 /**
  * Firestore access for the preference profile: one {@code user_preferences} document per user,
  * holding all of that user's entries (active and removed) in an {@code entries} list.
+ *
+ * <p>{@link #load} is called on every model call of every turn (to build the prompt block), so a loaded
+ * profile is kept in memory for a few seconds. Writes through this store refresh the cache at once; a
+ * change made on another instance shows up within the cache time.
  */
 @Component
 public class PreferenceStore {
 
 	private static final String ENTRIES = "entries";
 
-	private final Firestore firestore;
+	private static final Duration CACHE_TIME = Duration.ofSeconds(15);
 
-	public PreferenceStore(Firestore firestore) {
+	private record Cached(PreferenceProfile profile, Instant expiresAt) {}
+
+	private final Firestore firestore;
+	private final Clock clock;
+	private final Map<String, Cached> cache = new ConcurrentHashMap<>();
+
+	public PreferenceStore(Firestore firestore, Clock clock) {
 		this.firestore = firestore;
+		this.clock = clock;
 	}
 
 	public PreferenceProfile load(String userId) {
-		return fromSnapshot(FirestoreFutures.await(document(userId).get(), "read preferences"));
+		Cached cached = cache.get(userId);
+		if (cached != null && clock.instant().isBefore(cached.expiresAt())) {
+			return cached.profile();
+		}
+		return remember(userId, fromSnapshot(FirestoreFutures.await(document(userId).get(), "read preferences")));
 	}
 
 	/**
@@ -38,13 +57,20 @@ public class PreferenceStore {
 	 */
 	public PreferenceProfile update(String userId, UnaryOperator<PreferenceProfile> change) {
 		DocumentReference document = document(userId);
-		return FirestoreFutures.await(
-				firestore.runTransaction(transaction -> {
-					PreferenceProfile updated = change.apply(fromSnapshot(transaction.get(document).get()));
-					transaction.set(document, toMap(userId, updated));
-					return updated;
-				}),
-				"update preferences");
+		return remember(
+				userId,
+				FirestoreFutures.await(
+						firestore.runTransaction(transaction -> {
+							PreferenceProfile updated = change.apply(fromSnapshot(transaction.get(document).get()));
+							transaction.set(document, toMap(userId, updated));
+							return updated;
+						}),
+						"update preferences"));
+	}
+
+	private PreferenceProfile remember(String userId, PreferenceProfile profile) {
+		cache.put(userId, new Cached(profile, clock.instant().plus(CACHE_TIME)));
+		return profile;
 	}
 
 	private DocumentReference document(String userId) {
