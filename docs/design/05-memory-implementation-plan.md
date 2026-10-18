@@ -146,6 +146,28 @@ remembering deletions, consolidation of a topic across sessions, retention rules
   token-usage views already record real numbers to measure it.
 - Background work on Cloud Run: started only from a request, kept short and idempotent.
 
+## 7a. Deferred register (keep adding to this)
+
+Everything we consciously chose not to do yet, why, and what would make us revisit it. **Add a row whenever
+something is deferred**, in the same pass as the decision.
+
+| # | Deferred item | Why deferred | Revisit when | Documented in |
+|---|---|---|---|---|
+| D1 | Remembering user deletions (do not re-add a deleted preference; compare evidence time with `removedAt`) | Rare edge case; user can delete again; soft delete keeps the data | Users report removed entries coming back | doc 03, 6b |
+| D2 | Output check against hard constraints (an excluded sector or ticker must not appear in a recommendation); the guardrails' L4 output layer | Separate build; prompt injection covers the common case | Stage 5, or an exclusion is ever ignored | doc 03, 4.5; ARCHITECTURE.md "Input guardrails" |
+| D3 | A BigQuery audit row for guardrail rejections (only a WARN log with layer and reason exists) | Not needed to ship guardrails | Need to measure false positives at scale | ARCHITECTURE.md "Input guardrails" |
+| D4 | In-turn write tool for preferences (`updatePreferences`) | Decided batch only, to keep it simple | The batch job misses things users expect saved immediately | doc 03, 3.3 |
+| D5 | Consolidating a topic that recurs across sessions into one higher-level memory | Search returns one episode per session with dates, which is enough to start | Results from many sessions feel noisy | doc 04, 3.1 |
+| D6 | Retention and expiry of old episodes; merging old episodes | Needs a policy decision (including finance record-keeping) | Store growth or a compliance requirement | doc 04, section 5 |
+| D7 | Several vectors per episode (title plus per-topic); a message-level index for searching inside a conversation | Added complexity; one vector per episode is enough to start | Retrieval evals show episodes being missed | doc 04, 3.4 |
+| D8 | Cascade for scope checks and retrieval (embedding or fine-tuned classifier first, LLM only for ambiguous cases); reciprocal rank fusion instead of fixed weights | No traffic to justify | Cost or latency from the small-model calls becomes noticeable | interview Q&A (guardrails), doc 04 |
+| D9 | Merging the profile and episode extraction into one model call | Two calls are easier to test | Cost of the two calls matters | doc 04, 3.6; this doc, decision 18 |
+| D10 | Processing very long sessions in windows when they exceed one model call | Rare | A session exceeds the model's input | doc 04 |
+| D11 | A UI suggestion when the extractor disagrees with a manual entry (today the proposal is dropped) | Keep conflict handling simple | Users want to review proposed changes | doc 03, 4.6 |
+| D12 | Knowledge graph or temporal memory (Zep-style); Vertex AI Memory Bank (not in the Java SDK 1.7.0) | Overkill for a small per-user corpus | Needs relationships or validity periods between facts | doc 03, section 7 |
+| D13 | Held-out guardrail evals with fresh phrasings, other languages, and attacks split across turns (the 17-case eval was partly tuned) | Needs a fair test set | Before relying on the guardrails more widely | ARCHITECTURE.md "Input guardrails"; interview Q&A |
+| D14 | Fate of `loadMemory` / `GuardedMemoryService` once episodes exist, and creating the Firestore composite index it needs | Depends on episodic design; index is an infrastructure change that needs approval | Stage 4 | doc 04, section 5 |
+
 ## 8. Housekeeping when it is built
 
 Update, in the same pass as the code: ARCHITECTURE.md ("Sessions and memory" and a new section),
