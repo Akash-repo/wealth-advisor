@@ -125,9 +125,9 @@ remembering deletions, consolidation of a topic across sessions, retention rules
 
 ## 5a. Remaining discussion agenda (tick off as settled)
 
-- [ ] Drift 1: the contradiction rule (explicit statement vs implicit signal)
+- [x] Drift 1: the contradiction rule. Settled: only explicit statements act, with a verified evidence quote; no separate mechanism (doc 03, 4.4)
 - [ ] Drift 2: staleness by category (what lasts forever, what is flagged after how long)
-- [ ] Drift 3: confirm-back behavior ("is this still true?")
+- [x] Drift 3: confirm-back for conflicts is not needed (no behavioural inference, D15); confirm-back for age is part of Drift 2
 - [ ] Episodic retrieval: prompt wording for the tool, which agent gets it, the fate of `loadMemory`
 - [ ] Episodes over time: retention or merging (D6), or keep deferred
 - [ ] One extraction call or two
@@ -180,6 +180,7 @@ something is deferred**, in the same pass as the decision.
 | D11 | A UI suggestion when the extractor disagrees with a manual entry (today the proposal is dropped) | Keep conflict handling simple | Users want to review proposed changes | doc 03, 4.6 |
 | D12 | Knowledge graph or temporal memory (Zep-style); Vertex AI Memory Bank (not in the Java SDK 1.7.0) | Overkill for a small per-user corpus | Needs relationships or validity periods between facts | doc 03, section 7 |
 | D13 | Held-out guardrail evals with fresh phrasings, other languages, and attacks split across turns (the 17-case eval was partly tuned) | Needs a fair test set | Before relying on the guardrails more widely | ARCHITECTURE.md "Input guardrails"; interview Q&A |
+| D15 | Inferring preferences from behaviour (repeated questions, repeated requests) and the contradiction counter and conflict confirm-back it would need | Riskier second feature; only explicit statements act for now | Users say the system should have noticed a pattern | doc 03, 4.4 |
 | D14 | Fate of `loadMemory` / `GuardedMemoryService` once episodes exist, and creating the Firestore composite index it needs | Depends on episodic design; index is an infrastructure change that needs approval | Stage 4 | doc 04, section 5 |
 
 ## 8. Housekeeping when it is built

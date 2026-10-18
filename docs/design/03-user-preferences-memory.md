@@ -116,6 +116,12 @@ same work twice.
   stored (see ARCHITECTURE.md "Input guardrails"), so they are never seen.
 - **Model:** a small model with a response schema is fine for extraction. Conflict resolution ("fintech is
   fine now" against an earlier "no finance") is where small models err, so it needs eval cases.
+- **Only explicit statements act** (decided 2026-10-17). An operation is allowed only when the user directly
+  stated the fact ("I'm okay with energy stocks now"). Behaviour alone (asking about XOM, asking for a fish
+  recipe) never creates, changes or removes an entry. Each operation must carry an **evidence quote**, the
+  user's exact words; code verifies the quote appears verbatim in the user's messages and drops the
+  operation otherwise. The same rule covers contradictions: there is no separate contradiction mechanism, an
+  explicit statement simply produces an `update` or `remove`.
 - **Output:** a list of operations, each `add`, `update`, `remove`, or `ignore`, with a confidence score. A
   low-confidence or ambiguous operation is not applied silently; it should lead the agent to ask the user.
 - **Backfill:** a user with many old sessions must not trigger one huge job. Cap the sessions per run (newest
