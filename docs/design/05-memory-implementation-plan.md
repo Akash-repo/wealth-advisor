@@ -131,6 +131,7 @@ remembering deletions, consolidation of a topic across sessions, retention rules
 - [x] Drift 3: confirm-back for conflicts is not needed (no behavioural inference, D15); confirm-back for age is part of Drift 2
 - [ ] Episodic retrieval: prompt wording for the tool, which agent gets it, the fate of `loadMemory`
 - [ ] Episodes over time: retention or merging (D6), or keep deferred
+- [ ] Review the draft extractor prompts (doc 06)
 - [ ] One extraction call or two
 - [ ] Hybrid score weights and recency decay (defaults now, tune with evals)
 - [ ] Technical verification in section 6 (read-only checks I can run during the discussion)
