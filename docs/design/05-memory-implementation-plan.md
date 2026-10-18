@@ -1,6 +1,8 @@
 # 05 — Memory: implementation plan
 
-Status: **plan only; nothing is built.** Written 2026-10-17 so that whoever implements it (a later session)
+Status: **plan only; nothing is built. Owner's decision (2026-10-17): finish discussing every memory point
+first, then implement everything in one pass** (the stages in section 5 remain the internal order, with tests
+per stage). Written 2026-10-17 so that whoever implements it (a later session)
 has the whole picture in one place. Read [03 — User preferences](03-user-preferences-memory.md) and
 [04 — Episodic memory](04-episodic-memory.md) for the reasoning; this document is the build plan that ties
 them together. **Implementation starts only when the owner says "go"** (they asked to discuss design before
@@ -120,6 +122,18 @@ multi-topic session is split, one user can never receive another user's episodes
 
 **Stage 5 — later:** the output check against hard constraints (the not-yet-built L4 in the guardrails),
 remembering deletions, consolidation of a topic across sessions, retention rules.
+
+## 5a. Remaining discussion agenda (tick off as settled)
+
+- [ ] Drift 1: the contradiction rule (explicit statement vs implicit signal)
+- [ ] Drift 2: staleness by category (what lasts forever, what is flagged after how long)
+- [ ] Drift 3: confirm-back behavior ("is this still true?")
+- [ ] Episodic retrieval: prompt wording for the tool, which agent gets it, the fate of `loadMemory`
+- [ ] Episodes over time: retention or merging (D6), or keep deferred
+- [ ] One extraction call or two
+- [ ] Hybrid score weights and recency decay (defaults now, tune with evals)
+- [ ] Technical verification in section 6 (read-only checks I can run during the discussion)
+- [ ] One combined lifecycle diagram, and the interview Q&A file for the memory question
 
 ## 6. Verify before coding
 
