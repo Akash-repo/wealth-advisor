@@ -31,11 +31,28 @@ public record AdvisorProperties(
 		@NotNull @Valid Guardrails guardrails,
 		@NotNull @Valid Profile profile,
 		@NotNull @Valid Extraction extraction,
-		@NotNull @Valid Episodes episodes) {
+		@NotNull @Valid Episodes episodes,
+		@NotNull @Valid Bigquery bigquery,
+		@NotNull @Valid Safety safety) {
 
 	/** A copy with different guardrail settings; the other groups are unchanged. */
 	public AdvisorProperties withGuardrails(Guardrails replacement) {
-		return new AdvisorProperties(model, chat, compaction, replacement, profile, extraction, episodes);
+		return new AdvisorProperties(model, chat, compaction, replacement, profile, extraction, episodes, bigquery, safety);
+	}
+
+	/** A copy with different profile settings; the other groups are unchanged. */
+	public AdvisorProperties withProfile(Profile replacement) {
+		return new AdvisorProperties(model, chat, compaction, guardrails, replacement, extraction, episodes, bigquery, safety);
+	}
+
+	/** A copy with different BigQuery settings; the other groups are unchanged. */
+	public AdvisorProperties withBigquery(Bigquery replacement) {
+		return new AdvisorProperties(model, chat, compaction, guardrails, profile, extraction, episodes, replacement, safety);
+	}
+
+	/** A copy with different episode settings; the other groups are unchanged. */
+	public AdvisorProperties withEpisodes(Episodes replacement) {
+		return new AdvisorProperties(model, chat, compaction, guardrails, profile, extraction, replacement, bigquery, safety);
 	}
 
 	/** Which Gemini model each job uses. */
@@ -103,4 +120,27 @@ public record AdvisorProperties(
 			@DecimalMin("0.0") double recencyWeight,
 			@DecimalMin("0.0") @DecimalMax("1.0") double similarityFloor,
 			@DecimalMin("0.0") @DecimalMax("1.0") double similarityCeiling) {}
+
+	/**
+	 * Which BigQuery dataset the audit and tool-usage data goes to, and whether the app may change that
+	 * dataset's schema. Local runs default to a dev dataset in {@code application.yml}; the {@code cloud}
+	 * profile points at production and only <em>verifies</em> the schema. See ARCHITECTURE.md "Environments".
+	 */
+	public record Bigquery(@NotBlank String dataset, @NotNull SchemaMode schemaMode) {}
+
+	/**
+	 * {@code APPLY}: create or evolve the dataset's tables and views on startup (additive only).
+	 * {@code VERIFY}: only check they exist and log an error if the schema is behind the code; never change it.
+	 */
+	public enum SchemaMode {
+		APPLY,
+		VERIFY
+	}
+
+	/**
+	 * Guards against a local run touching production data. Outside the {@code cloud} profile the app refuses
+	 * to start against the real Firestore unless the emulator is in use or {@code allowRealFirestore} is
+	 * set on purpose.
+	 */
+	public record Safety(boolean allowRealFirestore) {}
 }

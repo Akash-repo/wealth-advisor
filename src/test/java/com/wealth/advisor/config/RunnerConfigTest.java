@@ -32,8 +32,8 @@ class RunnerConfigTest {
 						pipeline,
 						mock(Client.class),
 						TestProperties.defaults(),
-						new AgentAuditRecorder(bigQuery, mapper),
-						new ToolUsageRecorder(bigQuery, mapper));
+						new AgentAuditRecorder(bigQuery, mapper, TestProperties.defaults()),
+						new ToolUsageRecorder(bigQuery, mapper, TestProperties.defaults()));
 	}
 
 	@Test

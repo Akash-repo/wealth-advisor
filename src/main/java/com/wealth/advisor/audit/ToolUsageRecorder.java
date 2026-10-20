@@ -1,5 +1,6 @@
 package com.wealth.advisor.audit;
 
+import com.wealth.advisor.config.AdvisorProperties;
 import com.wealth.advisor.constants.BigQueryNames;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.plugins.Plugin;
@@ -46,6 +47,7 @@ public class ToolUsageRecorder implements Plugin {
 
 	private final BigQuery bigQuery;
 	private final ObjectMapper objectMapper;
+	private final String dataset;
 
 	// functionCallId -> the call's start time + what to log once it finishes. Keyed globally
 	// (not per-turn) since a functionCallId is already unique across the whole app.
@@ -57,9 +59,10 @@ public class ToolUsageRecorder implements Plugin {
 	// user, because one user can have several sessions running at once.
 	private final Map<String, String> invocationIdByTurnKey = new ConcurrentHashMap<>();
 
-	public ToolUsageRecorder(BigQuery bigQuery, ObjectMapper objectMapper) {
+	public ToolUsageRecorder(BigQuery bigQuery, ObjectMapper objectMapper, AdvisorProperties properties) {
 		this.bigQuery = bigQuery;
 		this.objectMapper = objectMapper;
+		this.dataset = properties.bigquery().dataset();
 	}
 
 	private record PendingCall(
@@ -145,7 +148,7 @@ public class ToolUsageRecorder implements Plugin {
 		try {
 			InsertAllRequest.Builder request =
 					InsertAllRequest.newBuilder(
-							TableId.of(BigQueryNames.DATASET, BigQueryNames.TOOL_INVOCATIONS));
+							TableId.of(dataset, BigQueryNames.TOOL_INVOCATIONS));
 			rows.forEach(request::addRow);
 			InsertAllResponse response = bigQuery.insertAll(request.build());
 			if (response.hasErrors()) {

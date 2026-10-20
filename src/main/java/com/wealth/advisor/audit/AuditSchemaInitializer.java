@@ -1,5 +1,6 @@
 package com.wealth.advisor.audit;
 
+import com.wealth.advisor.config.AdvisorProperties;
 import com.wealth.advisor.constants.BigQueryNames;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.DatasetInfo;
@@ -14,6 +15,8 @@ import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
@@ -55,13 +58,21 @@ public class AuditSchemaInitializer implements ApplicationRunner {
 
 
 	private final BigQuery bigQuery;
+	private final String dataset;
+	private final AdvisorProperties.SchemaMode schemaMode;
 
-	public AuditSchemaInitializer(BigQuery bigQuery) {
+	public AuditSchemaInitializer(BigQuery bigQuery, AdvisorProperties properties) {
 		this.bigQuery = bigQuery;
+		this.dataset = properties.bigquery().dataset();
+		this.schemaMode = properties.bigquery().schemaMode();
 	}
 
 	@Override
 	public void run(ApplicationArguments args) {
+		if (schemaMode == AdvisorProperties.SchemaMode.VERIFY) {
+			verify();
+			return;
+		}
 		try {
 			ensureDataset();
 			Table table = auditTable();
@@ -79,23 +90,43 @@ public class AuditSchemaInitializer implements ApplicationRunner {
 		}
 	}
 
+	/** Read-only: reports what is missing and changes nothing. */
+	private void verify() {
+		try {
+			List<String> problems = new ArrayList<>(SchemaVerifier.missingTables(bigQuery, dataset, List.of(BigQueryNames.AGENT_AUDIT_LOG)));
+			Table table = auditTable();
+			if (table != null) {
+				Set<String> present = table.<StandardTableDefinition>getDefinition().getSchema().getFields().stream()
+						.map(Field::getName)
+						.collect(Collectors.toSet());
+				schema().getFields().stream()
+						.map(Field::getName)
+						.filter(name -> !present.contains(name))
+						.forEach(name -> problems.add("column " + BigQueryNames.AGENT_AUDIT_LOG + "." + name));
+			}
+			SchemaVerifier.report(log, dataset, problems);
+		} catch (Exception e) {
+			log.warn("Could not verify the BigQuery audit schema: {}", e.getMessage());
+		}
+	}
+
 	private void ensureDataset() {
-		if (bigQuery.getDataset(BigQueryNames.DATASET) == null) {
-			bigQuery.create(DatasetInfo.newBuilder(BigQueryNames.DATASET).build());
-			log.info("Created BigQuery dataset '{}'", BigQueryNames.DATASET);
+		if (bigQuery.getDataset(dataset) == null) {
+			bigQuery.create(DatasetInfo.newBuilder(dataset).build());
+			log.info("Created BigQuery dataset '{}'", dataset);
 		}
 	}
 
 	private Table auditTable() {
-		return bigQuery.getTable(BigQueryNames.DATASET, BigQueryNames.AGENT_AUDIT_LOG);
+		return bigQuery.getTable(dataset, BigQueryNames.AGENT_AUDIT_LOG);
 	}
 
 	private void createTable() {
 		bigQuery.create(
-				TableInfo.newBuilder(TableId.of(BigQueryNames.DATASET, BigQueryNames.AGENT_AUDIT_LOG), StandardTableDefinition.of(schema()))
+				TableInfo.newBuilder(TableId.of(dataset, BigQueryNames.AGENT_AUDIT_LOG), StandardTableDefinition.of(schema()))
 						.setTableConstraints(primaryKeyConstraint())
 						.build());
-		log.info("Created BigQuery table '{}.{}'", BigQueryNames.DATASET, BigQueryNames.AGENT_AUDIT_LOG);
+		log.info("Created BigQuery table '{}.{}'", dataset, BigQueryNames.AGENT_AUDIT_LOG);
 	}
 
 	/** Schema evolution: columns added to {@link #schema()} later are added to the live table in place. */
@@ -104,7 +135,7 @@ public class AuditSchemaInitializer implements ApplicationRunner {
 		Schema evolved = withMissingColumns(current, schema());
 		if (evolved.getFields().size() > current.getFields().size()) {
 			bigQuery.update(table.toBuilder().setDefinition(StandardTableDefinition.of(evolved)).build());
-			log.info("Added {} column(s) to BigQuery table '{}.{}'", evolved.getFields().size() - current.getFields().size(), BigQueryNames.DATASET, BigQueryNames.AGENT_AUDIT_LOG);
+			log.info("Added {} column(s) to BigQuery table '{}.{}'", evolved.getFields().size() - current.getFields().size(), dataset, BigQueryNames.AGENT_AUDIT_LOG);
 		}
 	}
 
@@ -123,7 +154,7 @@ public class AuditSchemaInitializer implements ApplicationRunner {
 	private void ensurePrimaryKey(Table table) {
 		if (table.getTableConstraints() == null || table.getTableConstraints().getPrimaryKey() == null) {
 			bigQuery.update(table.toBuilder().setTableConstraints(primaryKeyConstraint()).build());
-			log.info("Retrofitted primary key constraint onto existing BigQuery table '{}.{}'", BigQueryNames.DATASET, BigQueryNames.AGENT_AUDIT_LOG);
+			log.info("Retrofitted primary key constraint onto existing BigQuery table '{}.{}'", dataset, BigQueryNames.AGENT_AUDIT_LOG);
 		}
 	}
 

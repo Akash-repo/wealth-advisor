@@ -23,6 +23,8 @@ public final class TestProperties {
 				new AdvisorProperties.Profile("gemini-2.5-flash-lite", 500, 60, 0.6),
 				new AdvisorProperties.Extraction(30, 10),
 				new AdvisorProperties.Episodes(
-						"gemini-2.5-flash-lite", "gemini-embedding-001", 768, 8, 5, 0.25, 30, 365, 6000, 0.6, 0.3, 0.1, 0.5, 0.75));
+						"gemini-2.5-flash-lite", "gemini-embedding-001", 768, 8, 5, 0.25, 30, 365, 6000, 0.6, 0.3, 0.1, 0.5, 0.75),
+				new AdvisorProperties.Bigquery("wealth_agent_dev", AdvisorProperties.SchemaMode.APPLY),
+				new AdvisorProperties.Safety(false));
 	}
 }

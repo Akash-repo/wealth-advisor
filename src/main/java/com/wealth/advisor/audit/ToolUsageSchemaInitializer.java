@@ -1,5 +1,6 @@
 package com.wealth.advisor.audit;
 
+import com.wealth.advisor.config.AdvisorProperties;
 import com.wealth.advisor.constants.BigQueryNames;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.tools.BaseTool;
@@ -71,14 +72,22 @@ public class ToolUsageSchemaInitializer implements ApplicationRunner {
 
 	private final BigQuery bigQuery;
 	private final List<LlmAgent> agents;
+	private final String dataset;
+	private final AdvisorProperties.SchemaMode schemaMode;
 
-	public ToolUsageSchemaInitializer(BigQuery bigQuery, List<LlmAgent> agents) {
+	public ToolUsageSchemaInitializer(BigQuery bigQuery, List<LlmAgent> agents, AdvisorProperties properties) {
 		this.bigQuery = bigQuery;
 		this.agents = agents;
+		this.dataset = properties.bigquery().dataset();
+		this.schemaMode = properties.bigquery().schemaMode();
 	}
 
 	@Override
 	public void run(ApplicationArguments args) {
+		if (schemaMode == AdvisorProperties.SchemaMode.VERIFY) {
+			verify();
+			return;
+		}
 		try {
 			ensureTablesExist();
 			syncToolRegistry();
@@ -90,20 +99,35 @@ public class ToolUsageSchemaInitializer implements ApplicationRunner {
 		}
 	}
 
+	/** Read-only: reports what is missing; creates nothing and writes no registry rows. */
+	private void verify() {
+		try {
+			SchemaVerifier.report(
+					log,
+					dataset,
+					SchemaVerifier.missingTables(
+							bigQuery,
+							dataset,
+							List.of(BigQueryNames.TOOL_INVOCATIONS, BigQueryNames.TOOL_REGISTRY_EVENTS, BigQueryNames.TOOL_REGISTRY_VIEW)));
+		} catch (Exception e) {
+			log.warn("Could not verify the BigQuery tool-usage schema: {}", e.getMessage());
+		}
+	}
+
 	private void ensureTablesExist() throws InterruptedException {
-		if (bigQuery.getTable(BigQueryNames.DATASET, BigQueryNames.TOOL_INVOCATIONS) == null) {
+		if (bigQuery.getTable(dataset, BigQueryNames.TOOL_INVOCATIONS) == null) {
 			bigQuery.create(
 					TableInfo.newBuilder(
-									TableId.of(BigQueryNames.DATASET, BigQueryNames.TOOL_INVOCATIONS), invocationsDefinition())
+									TableId.of(dataset, BigQueryNames.TOOL_INVOCATIONS), invocationsDefinition())
 							.setTableConstraints(invocationsConstraints())
 							.build());
-			log.info("Created BigQuery table '{}.{}'", BigQueryNames.DATASET, BigQueryNames.TOOL_INVOCATIONS);
+			log.info("Created BigQuery table '{}.{}'", dataset, BigQueryNames.TOOL_INVOCATIONS);
 		}
-		if (bigQuery.getTable(BigQueryNames.DATASET, BigQueryNames.TOOL_REGISTRY_EVENTS) == null) {
+		if (bigQuery.getTable(dataset, BigQueryNames.TOOL_REGISTRY_EVENTS) == null) {
 			bigQuery.create(
 					TableInfo.of(
-							TableId.of(BigQueryNames.DATASET, BigQueryNames.TOOL_REGISTRY_EVENTS), registryEventsDefinition()));
-			log.info("Created BigQuery table '{}.{}'", BigQueryNames.DATASET, BigQueryNames.TOOL_REGISTRY_EVENTS);
+							TableId.of(dataset, BigQueryNames.TOOL_REGISTRY_EVENTS), registryEventsDefinition()));
+			log.info("Created BigQuery table '{}.{}'", dataset, BigQueryNames.TOOL_REGISTRY_EVENTS);
 		}
 		// Re-issued every startup (idempotent, metadata-only, no data risk) so the view definition
 		// can never drift from what this class actually creates it as.
@@ -133,7 +157,7 @@ public class ToolUsageSchemaInitializer implements ApplicationRunner {
 	private void syncToolRegistry() {
 		Instant now = Instant.now();
 		InsertAllRequest.Builder request =
-				InsertAllRequest.newBuilder(TableId.of(BigQueryNames.DATASET, BigQueryNames.TOOL_REGISTRY_EVENTS));
+				InsertAllRequest.newBuilder(TableId.of(dataset, BigQueryNames.TOOL_REGISTRY_EVENTS));
 		for (LlmAgent agent : agents) {
 			for (BaseTool tool : agent.tools().blockingGet()) {
 				Map<String, Object> row = new HashMap<>();
@@ -154,7 +178,7 @@ public class ToolUsageSchemaInitializer implements ApplicationRunner {
 	}
 
 	private String qualifiedTableRef(String table) {
-		return "%s.%s.%s".formatted(bigQuery.getOptions().getProjectId(), BigQueryNames.DATASET, table);
+		return "%s.%s.%s".formatted(bigQuery.getOptions().getProjectId(), dataset, table);
 	}
 
 	private static StandardTableDefinition invocationsDefinition() {
@@ -190,7 +214,7 @@ public class ToolUsageSchemaInitializer implements ApplicationRunner {
 										.setReferencedTable(
 												TableId.of(
 														bigQuery.getOptions().getProjectId(),
-														BigQueryNames.DATASET,
+														dataset,
 														BigQueryNames.AGENT_AUDIT_LOG))
 										.setColumnReferences(
 												List.of(

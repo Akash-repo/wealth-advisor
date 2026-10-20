@@ -33,6 +33,7 @@ file grows as new questions come up.
 - [Logging and traceability](#logging-and-traceability)
 - [Evals](#evals)
 - [Environment variables](#environment-variables)
+- [Environments](#environments)
 - [GCP deployment (Cloud Run)](#gcp-deployment-cloud-run)
 - [Gotchas discovered the hard way](#gotchas-discovered-the-hard-way)
 - [Milestone status](#milestone-status)
@@ -977,8 +978,7 @@ history, and the next legitimate message in that session is answered normally �
 questions are not refused. Run it against the **Firestore emulator** so it writes nothing to your real
 database: `gcloud components install cloud-firestore-emulator`, then
 `gcloud emulators firestore start --host-port=localhost:8086`, then run the Maven command above with
-`FIRESTORE_EMULATOR_HOST=localhost:8086` and `-Dtest=GuardrailEvalTest`. BigQuery has no emulator, so
-accepted turns still write audit rows to the real dataset. Each turn takes seconds; the whole class takes a few minutes.
+`FIRESTORE_EMULATOR_HOST=localhost:8086` and `-Dtest=GuardrailEvalTest`. BigQuery has no emulator: with `GCP_PROJECT_ID` set, accepted turns write audit rows to the **dev** dataset (`wealth_agent_dev`, never production); with it unset the project is a placeholder and those writes fail harmlessly. Each turn takes seconds; the whole class takes a few minutes.
 
 ## Long-term memory
 
@@ -1078,8 +1078,7 @@ preference statement.
 Run the evals against the **Firestore emulator**, never the real project:
 `gcloud components install cloud-firestore-emulator`, then `gcloud emulators firestore start
 --host-port=localhost:8086`, then `FIRESTORE_EMULATOR_HOST=localhost:8086 GOOGLE_GENAI_USE_VERTEXAI=true
-GOOGLE_CLOUD_PROJECT=<project> GOOGLE_CLOUD_LOCATION=us-central1 ./mvnw -Dtest=<TestName> test`. BigQuery has
-no emulator, so accepted chat turns in those tests still write audit rows to the real dataset.
+GOOGLE_CLOUD_PROJECT=<project> GOOGLE_CLOUD_LOCATION=us-central1 ./mvnw -Dtest=<TestName> test`. BigQuery has no emulator: with `GCP_PROJECT_ID` set, accepted turns write audit rows to the **dev** dataset (`wealth_agent_dev`, never production); with it unset the project is a placeholder and those writes fail harmlessly.
 
 ## Logging and traceability
 
@@ -1127,6 +1126,48 @@ instead (one credential covers Gemini, Firestore, and now BigQuery too, and it's
 automatically later via its attached service account). `FMP_API_KEY` is the sole exception, since
 Financial Modeling Prep is a third-party SaaS API, not a GCP service — ADC has no meaning there.
 
+## Environments
+
+Added 2026-10-20 (design and reasoning: `docs/design/07-environments-and-schema.md`). **The service on Cloud
+Run is production.** A local run or a test must not be able to change it, and schema changes are applied as
+their own step.
+
+| | Local (default) | Local with the Firestore emulator | Production (`cloud` profile) |
+|---|---|---|---|
+| Firestore | **refuses to start** (see below) | the emulator, in memory | real |
+| BigQuery dataset | `wealth_agent_dev` | `wealth_agent_dev` | `wealth_agent` |
+| BigQuery schema mode | `apply` (creates and evolves) | `apply` | `verify` (looks, never changes) |
+| Gemini and embeddings (Vertex AI) | real, billed | real, billed | real |
+| Market data (FMP) | real if `FMP_API_KEY` is set | same | real, key from Secret Manager |
+| Demo user | default password allowed | default password allowed | **refuses to start** with the default password |
+
+- **The Firestore guard** (`FirestoreConfig.requireSafeTarget`): outside the `cloud` profile the app only
+  starts against the real Firestore if `advisor.safety.allow-real-firestore` is set on purpose
+  (`ADVISOR_SAFETY_ALLOWREALFIRESTORE=true`). Otherwise start the emulator (`gcloud emulators firestore
+  start --host-port=localhost:8086`) and set `FIRESTORE_EMULATOR_HOST`.
+- **BigQuery has no emulator**, so isolation is the dataset name: `advisor.bigquery.dataset` (default
+  `wealth_agent_dev`, overridden by the `cloud` profile). The dev dataset and its tables are created on first
+  local start.
+- **Schema changes are a separate, deliberate step.** The deployed service runs in `verify` mode: a new
+  revision logs an ERROR if the dataset is behind the code, and changes nothing. To apply a schema change to
+  production, before deploying, run the app once against the production dataset in `apply` mode, with the
+  Firestore emulator so nothing else is touched:
+  ```
+  FIRESTORE_EMULATOR_HOST=localhost:8086 GCP_PROJECT_ID=<project> GOOGLE_GENAI_USE_VERTEXAI=true \
+  GOOGLE_CLOUD_PROJECT=<project> GOOGLE_CLOUD_LOCATION=us-central1 \
+  ADVISOR_BIGQUERY_DATASET=wealth_agent ADVISOR_BIGQUERY_SCHEMAMODE=apply ./mvnw spring-boot:run
+  ```
+  Wait for the `Created ...` / `Added ... column(s)` log lines, then stop it. Check with `bq show --schema
+  <project>:wealth_agent.agent_audit_log`.
+- **Changes are additive only** (new nullable columns, new tables, new or replaced views), because the
+  revision that is still serving keeps running while the new one is tested. A destructive change takes two
+  releases: stop using it, then remove it.
+- **Deploy order:** apply the schema, deploy a no-traffic canary revision, test it, then shift traffic (see
+  [GCP deployment](#gcp-deployment-cloud-run)).
+- Tests use their own properties (`TestProperties`), and the eval tests run against the emulator, so they write
+  nothing to production Firestore. Their BigQuery rows go to the dev dataset when `GCP_PROJECT_ID` is set, and
+  fail harmlessly (placeholder project) when it is not.
+
 ## GCP deployment (Cloud Run)
 
 Deployed live on 2026-07-30 (milestone 11 is now ✅). Originally written as a forward-looking
@@ -1135,8 +1176,11 @@ section in this doc was written after the fact. The steps below matched reality 
 — step 3 (build-time IAM) wasn't anticipated by the original design and was found live, the same
 way the [Gotchas](#gotchas-discovered-the-hard-way) list generally gets built.
 
-**Why Cloud Run Service** (not Jobs, not GKE): this app is a plain request/response HTTP service
-with no background/batch work, so Jobs doesn't fit. GKE would mean managing a cluster for a single
+**Why Cloud Run Service** (not Jobs, not GKE): this app is a request/response HTTP service, so Jobs
+doesn't fit. Its one piece of background work is the per-user memory job (see [Long-term
+memory](#long-term-memory)), which a request starts and which keeps running after the `202` is sent; that is
+why the service is deployed with CPU always allocated (`--no-cpu-throttling`), since by default Cloud Run
+throttles the CPU once no request is open. GKE would mean managing a cluster for a single
 service — pure overhead here. Cloud Run Service scales to zero, needs no cluster ops, and — the
 detail that actually matters for this app specifically — its metadata-server ADC is exactly what
 `GenAiClientConfig`/`FirestoreConfig`/the BigQuery config bean already expect with zero code
@@ -1268,6 +1312,10 @@ this is a Maven project from `pom.xml` and builds a runnable container without o
 "don't add tooling this project doesn't need yet" call already made for the UI (Bootstrap via CDN,
 no bundler).
 
+Before the first deploy that includes a schema change, [apply the schema as its own
+step](#environments). The deploy itself creates a revision that gets **no traffic** until it has been
+tested (from 2026-10-20 this is the standard way to deploy):
+
 ```bash
 gcloud run deploy wealth-advisor \
   --source . \
@@ -1276,10 +1324,25 @@ gcloud run deploy wealth-advisor \
   --service-account=wealth-advisor-run@<PROJECT_ID>.iam.gserviceaccount.com \
   --allow-unauthenticated \
   --set-env-vars=GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=<PROJECT_ID>,GOOGLE_CLOUD_LOCATION=us-central1,GCP_PROJECT_ID=<PROJECT_ID>,SPRING_PROFILES_ACTIVE=cloud \
-  --set-secrets=FMP_API_KEY=fmp-api-key:latest \
+  --set-secrets=FMP_API_KEY=fmp-api-key:latest,DEMO_USER_PASSWORD=demo-user-password:latest \
   --memory=1Gi \
-  --cpu=1
+  --cpu=1 \
+  --no-cpu-throttling \
+  --no-traffic \
+  --tag=canary
 ```
+
+`gcloud` prints the canary URL (`https://canary---wealth-advisor-...run.app`). Run the checks in step 6
+against it, then send traffic to the new revision:
+
+```bash
+gcloud run services update-traffic wealth-advisor --to-latest --region=us-central1 --project=<PROJECT_ID>
+# rollback: gcloud run services update-traffic wealth-advisor --to-revisions=<PREVIOUS_REVISION>=100 ...
+```
+
+`DEMO_USER_PASSWORD` comes from a secret created like `fmp-api-key` in step 4 (and readable by the runtime
+service account). With `SPRING_PROFILES_ACTIVE=cloud` the app refuses to start while the demo password is
+still the default `changeme`.
 
 **`--allow-unauthenticated` is not optional here, and is a different layer than this app's own
 login.** Cloud Run has its own IAM-based access control that sits in front of the container
@@ -1296,10 +1359,8 @@ applies from the next deploy; the already-deployed revision keeps the text forma
 `us-central1` matches `GOOGLE_CLOUD_LOCATION` deliberately — keeps Cloud Run and the Vertex AI
 calls it makes in the same region, not required but avoids unnecessary cross-region latency.
 
-Consider also setting `DEMO_USER_USERNAME`/`DEMO_USER_PASSWORD` (via `--set-env-vars` or another
-secret) rather than leaving the seeded account at its `demo`/`changeme` default once this is
-reachable on the public internet — self-service signup exists as the real path in, but the seeded
-account still exists too.
+The `cloud` profile also selects the production BigQuery dataset in `verify` mode (see
+[Environments](#environments)), so a starting revision never changes the production schema.
 
 ### 6. Post-deploy verification
 
@@ -1311,17 +1372,23 @@ Don't consider this done until each of these has actually been checked, not assu
    `permitAll` — worth specifically confirming they don't 302-redirect instead of serving).
 3. Upload a real PDF, confirm it shows up via `GET /api/portfolio/documents`.
 4. Send a chat message, confirm a real reply (not a generic error).
-5. Query BigQuery for a row in `agent_audit_log`/`tool_invocations` from that turn — confirms the
+5. Query BigQuery (dataset `wealth_agent`) for a row in `agent_audit_log`/`tool_invocations` from that turn — confirms the
    `bigquery.dataEditor`/`bigquery.jobUser` IAM actually worked end to end, not just that the app
    started without throwing.
 6. Check the Firestore console for the new documents/vectors/holdings — confirms
    `datastore.user` end to end the same way.
+7. Check the logs of the new revision for `BigQuery schema check passed ... (schema-mode=verify` (and no
+   ERROR about a dataset being behind the code).
+8. State a preference in a chat, wait for the 30-minute settle time (or deploy once with
+   `ADVISOR_EXTRACTION_SETTLEMINUTES=1` for this check), reload, and confirm the memory job's log lines
+   (`Preferences: ...`, `Episodes: ...`) and the "What I know about you" panel. This is the one thing a local
+   run cannot prove: the job continues after its request has been answered.
 
 ### 7. Redeploys
 
-Re-running the same `gcloud run deploy --source .` command creates a new revision and Cloud Run
-shifts 100% of traffic to it automatically (no manual traffic-split step needed for a project at
-this stage).
+Re-run the step 5 command: with `--no-traffic --tag=canary` it creates a new revision and leaves traffic on
+the current one until you move it with `update-traffic`. (Without `--no-traffic`, Cloud Run shifts 100% of
+traffic to a new revision at once, as the 2026-07-30 deploy did.)
 
 ### Cost/scaling notes (a tradeoff to decide at deploy time, not a recommendation)
 

@@ -28,8 +28,16 @@ class AdvisorPropertiesTest {
 	private static final Validator VALIDATOR = Validation.buildDefaultValidatorFactory().getValidator();
 
 	private static AdvisorProperties bind(Map<String, Object> overrides) throws Exception {
+		return bind(overrides, false);
+	}
+
+	/** {@code cloudProfile}: also load application-cloud.yml, which wins over application.yml as in the deployed app. */
+	private static AdvisorProperties bind(Map<String, Object> overrides, boolean cloudProfile) throws Exception {
 		List<PropertySource<?>> sources = new ArrayList<>();
 		sources.add(new MapPropertySource("overrides", overrides));
+		if (cloudProfile) {
+			sources.addAll(new YamlPropertySourceLoader().load("application-cloud", new ClassPathResource("application-cloud.yml")));
+		}
 		sources.addAll(new YamlPropertySourceLoader().load("application", new ClassPathResource("application.yml")));
 		return new Binder(ConfigurationPropertySources.from(sources))
 				.bind("advisor", AdvisorProperties.class)
@@ -48,6 +56,32 @@ class AdvisorPropertiesTest {
 		assertThat(p.compaction().eventRetentionSize()).isEqualTo(20);
 		assertThat(p.profile().maxWords()).isEqualTo(500);
 		assertThat(p.episodes().embeddingModel()).isEqualTo("gemini-embedding-001");
+	}
+
+	@Test
+	void localRunsDefaultToTheDevDatasetAndMayChangeItsSchema() throws Exception {
+		AdvisorProperties p = bind(Map.of());
+
+		assertThat(p.bigquery().dataset()).isEqualTo("wealth_agent_dev");
+		assertThat(p.bigquery().schemaMode()).isEqualTo(AdvisorProperties.SchemaMode.APPLY);
+		assertThat(p.safety().allowRealFirestore()).isFalse();
+	}
+
+	@Test
+	void theCloudProfileUsesTheProductionDatasetAndOnlyVerifiesItsSchema() throws Exception {
+		AdvisorProperties p = bind(Map.of(), true);
+
+		assertThat(p.bigquery().dataset()).isEqualTo("wealth_agent");
+		assertThat(p.bigquery().schemaMode()).isEqualTo(AdvisorProperties.SchemaMode.VERIFY);
+		assertThat(VALIDATOR.validate(p)).isEmpty();
+	}
+
+	@Test
+	void appliedSchemaToAnotherDatasetIsAnExplicitOverride() throws Exception {
+		AdvisorProperties p = bind(Map.of("advisor.bigquery.dataset", "wealth_agent", "advisor.bigquery.schema-mode", "apply"));
+
+		assertThat(p.bigquery().dataset()).isEqualTo("wealth_agent");
+		assertThat(p.bigquery().schemaMode()).isEqualTo(AdvisorProperties.SchemaMode.APPLY);
 	}
 
 	@Test

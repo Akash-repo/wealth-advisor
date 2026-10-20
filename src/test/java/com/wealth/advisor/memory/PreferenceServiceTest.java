@@ -95,9 +95,7 @@ class PreferenceServiceTest {
 	@Test
 	void aFullProfileRefusesANewEntryButStillAcceptsOneThatAlreadyExists() {
 		AdvisorProperties d = TestProperties.defaults();
-		PreferenceService tiny = serviceWith(new AdvisorProperties(
-				d.model(), d.chat(), d.compaction(), d.guardrails(),
-				new AdvisorProperties.Profile("m", 500, 1, 0.6), d.extraction(), d.episodes()));
+		PreferenceService tiny = serviceWith(d.withProfile(new AdvisorProperties.Profile("m", 500, 1, 0.6)));
 		state.set(PreferenceProfile.empty().with(extracted(PreferenceCategory.EXCLUDED_SECTORS, "Energy")));
 
 		assertThatThrownBy(() -> tiny.add("u", PreferenceCategory.EXCLUDED_SECTORS, "Utilities")).isInstanceOf(InvalidPreferenceException.class);

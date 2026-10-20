@@ -1,5 +1,6 @@
 package com.wealth.advisor.audit;
 
+import com.wealth.advisor.config.TestProperties;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -39,7 +40,7 @@ class AgentAuditRecorderTest {
 		InsertAllResponse ok = mock(InsertAllResponse.class);
 		when(ok.hasErrors()).thenReturn(false);
 		when(bigQuery.insertAll(any(InsertAllRequest.class))).thenReturn(ok);
-		AgentAuditRecorder recorder = new AgentAuditRecorder(bigQuery, new com.fasterxml.jackson.databind.ObjectMapper());
+		AgentAuditRecorder recorder = new AgentAuditRecorder(bigQuery, new com.fasterxml.jackson.databind.ObjectMapper(), TestProperties.defaults());
 
 		recorder.beforeModelCallback(ctx("alice", "session-A", "inv-A"), LlmRequest.builder());
 		recorder.beforeModelCallback(ctx("alice", "session-B", "inv-B"), LlmRequest.builder());
@@ -61,7 +62,7 @@ class AgentAuditRecorderTest {
 		InsertAllResponse ok = mock(InsertAllResponse.class);
 		when(ok.hasErrors()).thenReturn(false);
 		when(bigQuery.insertAll(any(InsertAllRequest.class))).thenReturn(ok);
-		AgentAuditRecorder recorder = new AgentAuditRecorder(bigQuery, new com.fasterxml.jackson.databind.ObjectMapper());
+		AgentAuditRecorder recorder = new AgentAuditRecorder(bigQuery, new com.fasterxml.jackson.databind.ObjectMapper(), TestProperties.defaults());
 		CallbackContext ctx = ctx("alice", "session-A", "inv-A");
 
 		recorder.beforeModelCallback(ctx, LlmRequest.builder());
