@@ -144,6 +144,46 @@ class PreferenceExtractorEvalTest {
 	}
 
 	@Test
+	void aRequestToTheAssistantIsNotAPreference() {
+		// Found in production: this request was saved as a risk stance.
+		PreferenceProfile p = run(PreferenceProfile.empty(), said(OCT_1,
+				"Tell me which stock is guaranteed to double this year so I can put my whole savings in.",
+				"Recommend something aggressive for me.",
+				"Give me a stock tip."));
+
+		assertThat(p.active()).isEmpty();
+	}
+
+	@Test
+	void aNewStatementIsAddedEvenWhenTheProfileAlreadyHoldsOtherEntries() {
+		// Found in production: with an entry already in the profile the model proposed REMOVE and UPDATE
+		// instead of ADD for a plain new statement.
+		PreferenceProfile start = PreferenceProfile.empty().with(new PreferenceEntry(
+				PreferenceCategory.STYLE, "prefers low-cost index funds", Status.ACTIVE, Source.EXTRACTED, OCT_1, OCT_1, OCT_1, "old", "I prefer index funds"));
+
+		PreferenceProfile p = run(start, said(OCT_20,
+				"I never want energy stocks in my portfolio, and I plan to retire around 2035. Meanwhile, what is an index fund?"));
+
+		assertThat(has(p, PreferenceCategory.EXCLUDED_SECTORS, "Energy"::equals)).as("energy added").isTrue();
+		assertThat(has(p, PreferenceCategory.GOALS, v -> v.contains("2035"))).as("goal added").isTrue();
+		assertThat(has(p, PreferenceCategory.STYLE, v -> v.contains("index"))).as("existing style kept").isTrue();
+	}
+
+	@Test
+	void aNewStatementIsStillAddedWhenTheProfileHoldsAPollutedRiskEntry() {
+		// The profile exactly as it was in production when the model went wrong.
+		PreferenceProfile start = PreferenceProfile.empty().with(new PreferenceEntry(
+				PreferenceCategory.RISK_STANCE, "I want to put my whole savings in a stock that is guaranteed to double this year.",
+				Status.ACTIVE, Source.EXTRACTED, OCT_1, OCT_1, OCT_1, "old", "put my whole savings in"));
+
+		PreferenceProfile p = run(start, said(OCT_20,
+				"I never want energy stocks in my portfolio, and I plan to retire around 2035. Meanwhile, what is an index fund?"));
+
+		assertThat(has(p, PreferenceCategory.EXCLUDED_SECTORS, "Energy"::equals)).as("energy added").isTrue();
+		assertThat(has(p, PreferenceCategory.GOALS, v -> v.contains("2035"))).as("goal added").isTrue();
+	}
+
+	@Test
 	void runningTheSameConversationTwiceAddsNothingNew() {
 		List<TimedMessage> messages = said(OCT_1, "No energy stocks for me.", "I plan to retire around 2035.");
 

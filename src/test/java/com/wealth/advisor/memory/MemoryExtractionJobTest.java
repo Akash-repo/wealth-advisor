@@ -200,7 +200,7 @@ class MemoryExtractionJobTest {
 	}
 
 	@Test
-	void atMostTheConfiguredNumberOfSessionsAreProcessedPerRun_oldestChangeFirst() {
+	void atMostTheConfiguredNumberOfSessionsAreProcessedPerRun_newestFirst() {
 		for (int i = 0; i < 12; i++) {
 			session("s" + i, LONG_AGO.minusSeconds(1000 - i), "message " + i);
 		}
@@ -209,8 +209,10 @@ class MemoryExtractionJobTest {
 		job.refresh("u");
 
 		verify(state, times(10)).markProcessed(eq("u"), anyString(), any());
-		verify(state, never()).markProcessed(eq("u"), eq("s10"), any());
-		verify(state, never()).markProcessed(eq("u"), eq("s11"), any());
+		// s11 changed last and s0 first: the ten newest (s2 to s11) are done, the two oldest wait
+		verify(state, never()).markProcessed(eq("u"), eq("s0"), any());
+		verify(state, never()).markProcessed(eq("u"), eq("s1"), any());
+		verify(state).markProcessed(eq("u"), eq("s11"), any());
 	}
 
 	@Test
