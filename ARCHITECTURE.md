@@ -1004,7 +1004,7 @@ sessions (cheap: no messages loaded) and processes those that have **changed** s
 session's last-update time is newer than the one stored in `memory_extraction_state`) and have
 **settled** (no new message for `advisor.extraction.settle-minutes`, 30 by default, so a half-finished
 conversation is not summarised). At most `advisor.extraction.max-sessions-per-run` sessions are done per
-run. For each, the **whole** session is read again and everything derived from it is recomputed: there is
+run, newest first. For each, the **whole** session is read again and everything derived from it is recomputed: there is
 no bookmark inside a session and no lease, because the writes are idempotent (profile entries are
 upserted by key, episodes have predictable ids). A session that fails is logged and retried on the next
 run. Memory only matters *across* conversations, because within one the full history is already in the

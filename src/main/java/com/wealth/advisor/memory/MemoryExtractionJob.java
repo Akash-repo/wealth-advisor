@@ -26,7 +26,9 @@ import org.springframework.stereotype.Component;
  * <em>settled</em> (no new message for a while, so a half-finished conversation is not read), the whole
  * session is read again and everything derived from it is recomputed. No bookmark inside a session and no
  * lease: the writes are idempotent (profile entries are upserted by key), so two overlapping runs only
- * repeat work. A session that fails is logged and retried on the next run. See
+ * repeat work. Newest sessions go first when there are more than one run's worth (the most recent
+ * conversation matters most, and "newer overrides older" is decided by message time, so the order cannot
+ * change the result). A session that fails is logged and retried on the next run. See
  * docs/design/03-user-preferences-memory.md.
  */
 @Component
@@ -94,7 +96,7 @@ public class MemoryExtractionJob {
 		Instant now = clock.instant();
 		List<SessionSource.SessionStamp> due = sessions.list(userId).stream()
 				.filter(s -> changedSince(done.get(s.id()), s) && settled(s, now))
-				.sorted(Comparator.comparing(SessionSource.SessionStamp::lastUpdate))
+				.sorted(Comparator.comparing(SessionSource.SessionStamp::lastUpdate).reversed())
 				.limit(maxSessionsPerRun)
 				.toList();
 		log.debug("Memory refresh: {} session(s) due", due.size());

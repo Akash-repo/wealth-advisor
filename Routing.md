@@ -766,4 +766,4 @@ flowchart TD
     EPI -. "any failure" .-> RETRY
 ```
 
-At most `advisor.extraction.max-sessions-per-run` sessions are processed per run, oldest change first.
+At most `advisor.extraction.max-sessions-per-run` sessions are processed per run, newest change first.

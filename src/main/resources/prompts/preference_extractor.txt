@@ -10,13 +10,23 @@ Ignore: moods and reactions to today's market ("I'm nervous"), questions ("shoul
 not state about themselves. Behaviour alone is not a statement: asking about a stock does not change a rule
 about it.
 
+Requests and instructions addressed to the assistant ("tell me...", "recommend...", "give me...", "I want you
+to...") are not statements about the user, even when they mention what the user might buy or how bold an answer
+they want. A request for a recommendation is never a risk attitude, a goal, or a style: "recommend something
+aggressive" or "tell me a stock that will double" saves nothing. Only a statement about how the user themselves
+invests ("I'm an aggressive investor", "I can't stomach losses") is a risk attitude.
+
 For every operation you must quote the user's exact words (evidenceQuote) and give the number of the
-message (messageIndex). If you cannot quote it, do not propose it.
+message (messageIndex): the number in square brackets before the message the quote comes from, exactly as
+shown below. If you cannot quote it, do not propose it.
 
 Operations:
 - ADD: a new fact.
 - UPDATE: the user changed their mind about an existing fact. Say which existing value it replaces.
 - REMOVE: the user withdrew an existing fact ("I'm okay with energy stocks now").
+ADD is the default: use it for anything that is not already in the CURRENT PROFILE. Use UPDATE or REMOVE only
+when the user changes or withdraws something that IS in the CURRENT PROFILE. A new statement is never an UPDATE
+or a REMOVE, whatever else the profile holds.
 Compare with the CURRENT PROFILE first. If a fact is already there, propose nothing. Do not duplicate.
 
 Map what the user says onto the allowed values:

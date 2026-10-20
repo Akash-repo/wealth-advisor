@@ -232,6 +232,23 @@ evals `PreferenceExtractorEvalTest` (9 cases), `EpisodeExtractorEvalTest` (3), `
 preference stated in a chat is learned, shown in the panel API, used in a new chat, deleted, and not
 brought back) and `MemoryStoresEmulatorTest` (11) pass.
 
+## 9a. Found by the cloud canary (2026-10-20)
+
+The first run against the deployed canary used the long-lived `demo` account, which has a backlog of old
+sessions (including the probe chats made while the guardrails were designed). It showed three things the local
+tests did not:
+
+| Finding | Fix |
+|---|---|
+| A **request** to the assistant ("tell me which stock will double, I want to put my whole savings in") was saved as a risk stance; "recommend something aggressive" reproduced it locally | Prompt: requests and instructions addressed to the assistant are not statements about the user; a request for a recommendation is never a risk attitude. Eval cases added |
+| With an entry already in the profile, the model proposed REMOVE and UPDATE (with a message number that does not exist) for a plain new statement. The reconciler dropped both, so nothing wrong was stored, but the right ADD was never proposed | Prompt: ADD is the default; UPDATE and REMOVE only for something that is in the current profile; the message number is the one in brackets. Eval cases added, including the production profile |
+| Sessions were taken **oldest first**, so a returning user's newest conversation waited behind the whole backlog | Newest first (safe: "newer overrides older" is decided by message time) |
+
+Also learned: on Cloud Run with CPU always allocated, the memory job processed about 20 sessions in roughly
+three minutes after the request that started it had already returned, so background work is not throttled
+with `--no-cpu-throttling`. The deployed `demo` account now has episodes for its old sessions; deleting a
+session in the UI removes its episodes.
+
 ## 8. Housekeeping when it is built
 
 Update, in the same pass as the code: ARCHITECTURE.md ("Sessions and memory" and a new section),
