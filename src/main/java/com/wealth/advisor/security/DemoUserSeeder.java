@@ -3,6 +3,7 @@ package com.wealth.advisor.security;
 import com.wealth.advisor.constants.FirestoreCollections;
 import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.DocumentReference;
+import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;
 import java.util.Map;
 import org.slf4j.Logger;
@@ -59,13 +60,33 @@ public class DemoUserSeeder implements ApplicationRunner {
 		}
 	}
 
+	/**
+	 * Whether the stored password hash no longer matches the configured password. The configured password
+	 * (from the environment or Secret Manager) is the source of truth for the demo account, so rotating it
+	 * there is enough; without this, an account created earlier with the old default would keep logging in
+	 * with that default forever.
+	 */
+	static boolean passwordNeedsUpdate(PasswordEncoder encoder, String configuredPassword, String storedHash) {
+		return storedHash == null || !encoder.matches(configuredPassword, storedHash);
+	}
+
+	private void syncPassword(DocumentReference userRef, DocumentSnapshot existing) throws Exception {
+		if (passwordNeedsUpdate(passwordEncoder, demoPassword, existing.getString("passwordHash"))) {
+			userRef.update("passwordHash", passwordEncoder.encode(demoPassword)).get();
+			log.info("Demo user '{}' existed with a different password; updated it to the configured one", demoUsername);
+		} else {
+			log.debug("Demo user '{}' already exists with the configured password", demoUsername);
+		}
+	}
+
 	@Override
 	public void run(ApplicationArguments args) {
 		requireNonDefaultPasswordInCloud(environment.matchesProfiles("cloud"), demoPassword);
 		try {
 			DocumentReference userRef = firestore.collection(FirestoreCollections.USERS).document(demoUsername);
-			if (userRef.get().get().exists()) {
-				log.debug("Demo user '{}' already exists, nothing to seed", demoUsername);
+			DocumentSnapshot existing = userRef.get().get();
+			if (existing.exists()) {
+				syncPassword(userRef, existing);
 				return;
 			}
 			userRef
