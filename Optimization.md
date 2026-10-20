@@ -66,7 +66,7 @@ ever needs re-citing verbatim). Threshold (50,000 tokens) and retention (20 even
 starting points, not measured optima — see the javadoc on `AgentConfig.COMPACTION_TOKEN_THRESHOLD`
 for the full reasoning and what real data to check them against later.
 
-### P1-2. No way to start a new conversation
+### P1-2. ✅ Done (2026-10-11, multi-session chat) — No way to start a new conversation
 
 **Where:** `AgentChatService.chat` — session id is hardcoded to `userId`, permanently.
 
@@ -256,7 +256,7 @@ action beyond the intended "educational analysis" framing. Not urgent for a lear
 a small trusted user base, but worth a plan before wider exposure — this is exactly the kind of
 "validate LLM output" work `ContentSanitizer`'s javadoc already earmarks as future guardrails scope.
 
-### P3-3. Seeded demo credential (`demo`/`changeme`) still live
+### P3-3. Seeded demo credential (`demo`/`changeme`) still live — code guard done 2026-10-20; the secret must still be set at deploy
 
 Already flagged in `ARCHITECTURE.md`'s deployment section as "consider changing... once reachable
 on the public internet" — repeating here because it's now actually true (Cloud Run deploy done,

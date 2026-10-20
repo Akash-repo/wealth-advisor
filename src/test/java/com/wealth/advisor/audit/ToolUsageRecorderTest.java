@@ -1,5 +1,6 @@
 package com.wealth.advisor.audit;
 
+import com.wealth.advisor.config.TestProperties;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -35,7 +36,7 @@ class ToolUsageRecorderTest {
 		InsertAllResponse ok = mock(InsertAllResponse.class);
 		when(ok.hasErrors()).thenReturn(false);
 		when(bigQuery.insertAll(any(InsertAllRequest.class))).thenReturn(ok);
-		recorder = new ToolUsageRecorder(bigQuery, new ObjectMapper());
+		recorder = new ToolUsageRecorder(bigQuery, new ObjectMapper(), TestProperties.defaults());
 		tool = mock(BaseTool.class);
 		when(tool.name()).thenReturn("getStockData");
 	}

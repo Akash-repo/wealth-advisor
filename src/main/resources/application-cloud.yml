@@ -7,3 +7,10 @@ logging:
   structured:
     format:
       console: com.wealth.advisor.logging.GoogleCloudLogFormatter
+
+# Production data. The deployed service only verifies the BigQuery schema; changes are applied as a separate,
+# deliberate step before a deploy (see ARCHITECTURE.md, "Environments").
+advisor:
+  bigquery:
+    dataset: wealth_agent
+    schema-mode: verify

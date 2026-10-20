@@ -1,5 +1,6 @@
 package com.wealth.advisor.audit;
 
+import com.wealth.advisor.config.AdvisorProperties;
 import com.wealth.advisor.constants.BigQueryNames;
 import com.wealth.advisor.util.AdkContentText;
 import com.fasterxml.jackson.annotation.JsonRawValue;
@@ -57,6 +58,7 @@ public class AgentAuditRecorder implements Plugin {
 
 	private final BigQuery bigQuery;
 	private final ObjectMapper objectMapper;
+	private final String dataset;
 
 	// One entry per in-flight user turn, keyed by ADK's invocationId. Removed by finalizeTurn.
 	private final Map<String, TurnAudit> turnsByInvocationId = new ConcurrentHashMap<>();
@@ -68,9 +70,10 @@ public class AgentAuditRecorder implements Plugin {
 	// another's invocationId. AgentChatService guarantees one in-flight turn per session.
 	private final Map<String, String> invocationIdByTurnKey = new ConcurrentHashMap<>();
 
-	public AgentAuditRecorder(BigQuery bigQuery, ObjectMapper objectMapper) {
+	public AgentAuditRecorder(BigQuery bigQuery, ObjectMapper objectMapper, AdvisorProperties properties) {
 		this.bigQuery = bigQuery;
 		this.objectMapper = objectMapper;
+		this.dataset = properties.bigquery().dataset();
 	}
 
 	/** One accumulating record per user turn, built up across both agents' model calls. */
@@ -232,7 +235,7 @@ public class AgentAuditRecorder implements Plugin {
 
 			InsertAllResponse response =
 					bigQuery.insertAll(
-							InsertAllRequest.newBuilder(TableId.of(BigQueryNames.DATASET, BigQueryNames.AGENT_AUDIT_LOG))
+							InsertAllRequest.newBuilder(TableId.of(dataset, BigQueryNames.AGENT_AUDIT_LOG))
 									.addRow(row)
 									.build());
 			if (response.hasErrors()) {

@@ -91,8 +91,7 @@ class EpisodeValidatorTest {
 	void atMostTheConfiguredNumberOfEpisodesAreKept() {
 		AdvisorProperties d = TestProperties.defaults();
 		AdvisorProperties.Episodes e = d.episodes();
-		AdvisorProperties two = new AdvisorProperties(
-				d.model(), d.chat(), d.compaction(), d.guardrails(), d.profile(), d.extraction(),
+		AdvisorProperties two = d.withEpisodes(
 				new AdvisorProperties.Episodes(
 						e.extractorModel(), e.embeddingModel(), e.embeddingDimensions(), 2, e.maxSearchResults(), e.minScore(),
 						e.recencyHalfLifeDays(), e.defaultWindowDays(), e.detailsMaxChars(), e.similarityWeight(), e.entityWeight(), e.recencyWeight(),

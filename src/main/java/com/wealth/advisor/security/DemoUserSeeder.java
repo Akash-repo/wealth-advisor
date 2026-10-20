@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.core.env.Environment;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
@@ -26,8 +27,11 @@ public class DemoUserSeeder implements ApplicationRunner {
 
 	private static final Logger log = LoggerFactory.getLogger(DemoUserSeeder.class);
 
+	static final String DEFAULT_PASSWORD = "changeme";
+
 	private final Firestore firestore;
 	private final PasswordEncoder passwordEncoder;
+	private final Environment environment;
 
 	@Value("${wealth.demo-user.username:demo}")
 	private String demoUsername;
@@ -35,13 +39,29 @@ public class DemoUserSeeder implements ApplicationRunner {
 	@Value("${wealth.demo-user.password:changeme}")
 	private String demoPassword;
 
-	public DemoUserSeeder(Firestore firestore, PasswordEncoder passwordEncoder) {
+	public DemoUserSeeder(Firestore firestore, PasswordEncoder passwordEncoder, Environment environment) {
 		this.firestore = firestore;
 		this.passwordEncoder = passwordEncoder;
+		this.environment = environment;
+	}
+
+	/**
+	 * The shipped default password is public (it is in the repository), so the deployed service must not
+	 * start with it.
+	 *
+	 * @throws IllegalStateException in the {@code cloud} profile while the default password is in use
+	 */
+	static void requireNonDefaultPasswordInCloud(boolean cloudProfile, String password) {
+		if (cloudProfile && DEFAULT_PASSWORD.equals(password)) {
+			throw new IllegalStateException(
+					"The demo user still has the default password. Set DEMO_USER_PASSWORD (from Secret Manager) before"
+							+ " running the 'cloud' profile.");
+		}
 	}
 
 	@Override
 	public void run(ApplicationArguments args) {
+		requireNonDefaultPasswordInCloud(environment.matchesProfiles("cloud"), demoPassword);
 		try {
 			DocumentReference userRef = firestore.collection(FirestoreCollections.USERS).document(demoUsername);
 			if (userRef.get().get().exists()) {

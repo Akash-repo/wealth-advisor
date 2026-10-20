@@ -1,5 +1,8 @@
 # Activate with --spring.profiles.active=local (or SPRING_PROFILES_ACTIVE=local).
 #
+# Outside the 'cloud' profile the app refuses to start against the real Firestore (see FirestoreConfig), and uses
+# the dev BigQuery dataset (advisor.bigquery.dataset in application.yml), so a local run cannot change production.
+#
 # This file intentionally has no properties: the Firestore client (see FirestoreConfig) already
 # auto-detects the FIRESTORE_EMULATOR_HOST *environment variable* on its own and switches to
 # emulator credentials automatically — that has to be a real env var (not a Spring property, and

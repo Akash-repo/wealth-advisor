@@ -26,7 +26,7 @@ import org.springframework.boot.test.context.SpringBootTest;
  *
  * <p>Needs Gemini credentials (Vertex env vars) and Firestore — run it against the Firestore
  * emulator ({@code FIRESTORE_EMULATOR_HOST}) rather than the real project. BigQuery has no
- * emulator, so accepted turns still write audit rows to the real dataset; rejected turns write
+ * emulator: with GCP_PROJECT_ID set, accepted turns write audit rows to the dev dataset (never production); rejected turns write
  * none (not asserted here — the audit rows are checked by {@code PortfolioEvalTest}).
  *
  * <p>Each case registers its own user so session counts can't leak between cases. Tagged {@code

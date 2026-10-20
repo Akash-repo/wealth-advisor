@@ -260,9 +260,7 @@ class PreferenceReconcilerTest {
 	@Test
 	void aFullProfileTakesNoNewEntries() {
 		AdvisorProperties d = TestProperties.defaults();
-		AdvisorProperties tiny = new AdvisorProperties(
-				d.model(), d.chat(), d.compaction(), d.guardrails(),
-				new AdvisorProperties.Profile("m", 500, 1, 0.6), d.extraction(), d.episodes());
+		AdvisorProperties tiny = d.withProfile(new AdvisorProperties.Profile("m", 500, 1, 0.6));
 		PreferenceProfile profile = PreferenceProfile.empty().with(entry(PreferenceCategory.EXCLUDED_SECTORS, "Energy", Source.EXTRACTED, OCT_1));
 		TimedMessage m = user(1, OCT_10, "No utilities either.");
 

@@ -60,6 +60,16 @@ advisor:
   compaction:
     token-threshold: 50000
     event-retention-size: 20
+  bigquery:
+    # Local runs and tests use a dev dataset, so they can never touch production audit data. The 'cloud'
+    # profile overrides this with the production dataset (application-cloud.yml).
+    dataset: wealth_agent_dev
+    # apply = create/evolve tables and views on startup; verify = only check and log, never change.
+    schema-mode: apply
+  safety:
+    # Outside the 'cloud' profile the app refuses to start against the real Firestore unless the emulator is
+    # used (FIRESTORE_EMULATOR_HOST). Set true only on purpose.
+    allow-real-firestore: false
   guardrails:
     # Master switch for the input guardrail chain (L1 heuristics, then L2 scope classifier).
     enabled: true
